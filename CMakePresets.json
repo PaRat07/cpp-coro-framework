@@ -1,0 +1,73 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 29,
+    "patch": 0
+  },
+  "include": [],
+  "configurePresets": [
+    {
+      "name": "base",
+      "displayName": "Base Config",
+      "description": "Base configuration using Ninja generator",
+      "generator": "Ninja",
+      "hidden": true,
+      "warnings": {
+        "dev": true,
+        "uninitialized": true
+      },
+      "errors": {
+        "dev": false,
+        "deprecated": true
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER" : "/usr/bin/clang-20",
+        "CMAKE_CXX_COMPILER" : "/usr/bin/clang++-20",
+        "CMAKE_LINKER_TYPE" : "LLD",
+        "CMAKE_CXX_STANDARD" : "26",
+        "CMAKE_CXX_FLAGS" : "-std=c++2c -lc++abi -fexperimental-library -D_LIBCPP_ENABLE_EXPERIMENTAL -stdlib=libc++ -Wall -Wpedantic -Wextra -Wno-switch-enum -Wno-signed-enum-bitfield -Wno-deprecated-register -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++98-c++11-compat-pedantic -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wno-missing-prototypes -Wno-documentation -Wno-documentation-unknown-command -Wno-weak-vtables -Wno-unused-const-variable -Wno-format-nonliteral -Wno-global-constructors -Wno-exit-time-destructors -Wno-error=padded -Wno-gcc-compat -D_LIBCPP_ABI_ENABLE_UNIQUE_PTR_TRIVIAL_ABI"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug",
+      "description": "Debug configuration using Ninja generator",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS_DEBUG": "-fstack-protector-all -fsanitize=address -g -fno-omit-frame-pointer -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG -D_LIBCPP_DEBUG -D_LIBCPP_ENABLE_DEBUG_MODE -D_LIBCPP_DEBUG_LEVEL=2 -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -D_LIBCPP_ENABLE_CONTRACTS"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release",
+      "description": "Release configuration using Ninja generator",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -flto=full -march=native -fno-plt -fomit-frame-pointer -fsplit-stack -mtune=native"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "configurePreset": "debug",
+      "verbose": true
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "configurePreset": "release",
+      "verbose": true
+    }
+  ],
+  "workflowPresets": [],
+  "testPresets": [],
+  "packagePresets": [],
+  "vendor": {}
+}
