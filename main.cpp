@@ -11,16 +11,18 @@
 #include <cassert>
 #include <coroutine>
 #include <queue>
+#include <source_location>
+#include <boost/stacktrace/stacktrace.hpp>
 
 
 template<class... Ts>
 struct overloaded : Ts... { using Ts::operator()...; };
 
+// clang attributes for all the tasks
 #define CORO_ATTRIBUTES nodiscard, clang::coro_await_elidable, clang::coro_return_type, clang::coro_lifetimebound, clang::coro_only_destroy_when_complete
 
 
-
-
+// async task for passing async further by stack
 template <typename Result = void>
 class [[CORO_ATTRIBUTES]] Task {
 public:
@@ -38,6 +40,7 @@ public:
 
         void* operator new(std::size_t n) {
             std::println(std::cerr, "Allocated {} bytes at {}", n, __PRETTY_FUNCTION__);
+            std::cout << boost::stacktrace::stacktrace() << std::endl;
             return ::operator new(n);
         }
 
@@ -103,10 +106,14 @@ public:
     Task() = default;
 
     ~Task() {
-        handle_.destroy();
+        if (handle_) {
+            handle_.destroy();
+        }
     }
 
-    Task(Task&& other) = delete;
+    Task(Task&& other) : handle_(std::exchange(other.handle_, {})) {
+    }
+
     Task(const Task& other) = delete;
 
     Awaiter operator co_await() noexcept { return Awaiter { handle_.promise() }; }
@@ -126,7 +133,7 @@ private:
 template <>
 struct Task<void>::Promise {
     std::exception_ptr exc_ptr;
-    std::coroutine_handle<> continuation;
+    std::coroutine_handle<> to_resume;
 
     Task get_return_object() noexcept {
         return Task { std::coroutine_handle<Promise>::from_promise(*this) };
@@ -158,10 +165,10 @@ struct Task<void>::Promise {
     std::suspend_never final_suspend() noexcept { return {}; }
 };
 
+// event loop, that allows to sleep for a specific time
 class TimedEventLoop {
 public:
     using time_t = std::chrono::steady_clock::time_point;
-
 
     struct TaskHolder {
         time_t wait_for_time;
@@ -202,14 +209,114 @@ private:
 };
 
 
-
+// suspend this coroutine for dur time
 TimedEventLoop::AwaitableByTime SleepFor(std::chrono::steady_clock::duration dur) noexcept {
     return TimedEventLoop::AwaitableByTime{ std::chrono::steady_clock::now() + dur };
 }
 
+
+// usage std::coroutine_handle<> my_handle = co_await Self();
+auto Self() {
+    struct SelfAwaitable {
+        bool await_ready() const noexcept { return false; }
+
+        void await_suspend(std::coroutine_handle<> handle) noexcept {
+            handle_ = handle;
+            handle.resume();
+        }
+
+        std::coroutine_handle<> await_resume() const noexcept {
+            return handle_;
+        }
+        std::coroutine_handle<> handle_;
+    };
+
+    return SelfAwaitable{};
+}
+
+// waits for all the coros and returns tuple of their results
+// TODO: what if coroutine returns void
+template<typename... Ts>
+Task<std::tuple<Ts...>> WhenAll([[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) {
+    co_return std::tuple { co_await tasks... };
+}
+
+
+alignas(max_align_t) inline std::array<std::byte, 10'000> main_task_aloc_buf;
+static bool used_main_task_buf = false;
+// task for co_main
+class [[CORO_ATTRIBUTES]] MainTask {
+public:
+    struct Promise {
+        std::exception_ptr exc_ptr;
+
+        MainTask get_return_object() noexcept {
+            return MainTask { std::coroutine_handle<Promise>::from_promise(*this) };
+        }
+
+        void unhandled_exception() noexcept {
+            exc_ptr = std::current_exception();
+        }
+
+        void* operator new(std::size_t n) {
+            if (n > main_task_aloc_buf.size()) [[unlikely]] {
+                std::println(std::cerr, "Unable to allocate MainTask on stack because it's size is greater than buffer's one({} > {})", n, main_task_aloc_buf.size());
+                return ::operator new(n);
+            } else if (used_main_task_buf) [[unlikely]] {
+                std::println(std::cerr, "Unable to allocate MainTask on stack because it's allocated more than one time (you must use MainTask only for co_main)");
+                return ::operator new(n);
+            }
+            used_main_task_buf = true;
+            return main_task_aloc_buf.data();
+        }
+
+        void operator delete(void *data) {
+            if (data != main_task_aloc_buf.data()) [[unlikely]] {
+                std::println(std::cerr, "Deallocating MainTask allocated on heap");
+                ::operator delete(data);
+            }
+        }
+
+        void return_void() noexcept {}
+
+        std::suspend_never initial_suspend() noexcept { return {}; }
+
+        std::suspend_always final_suspend() noexcept { return {}; }
+    };
+
+    using promise_type = Promise;
+
+    MainTask() = default;
+
+    ~MainTask() {
+        handle_.destroy();
+    }
+
+    MainTask(MainTask&& other) = delete;
+    MainTask(const MainTask& other) = delete;
+
+
+    template<typename... EvLoops>
+    void RunLoop() {
+        while ((!EvLoops::IsEmpty() || ...)) {
+            ((EvLoops::Resume()), ...);
+        }
+        if (handle_.promise().exc_ptr) {
+            std::rethrow_exception(handle_.promise().exc_ptr);
+        }
+    }
+
+private:
+    explicit MainTask(std::coroutine_handle<Promise> handle) noexcept
+        : handle_(handle)
+    {
+    }
+
+    std::coroutine_handle<Promise> handle_;
+};
+
+// USER CODE
 using namespace std::chrono_literals;
-
-
 
 Task<int> Get(int x) noexcept {
     std::println("Before: {}", x);
@@ -224,23 +331,14 @@ Task<int> Print() noexcept {
     co_return 1;
 }
 
-
-
-
-
-
-
-template<typename ResT>
-auto sync_wait([[clang::coro_await_elidable_argument]] Task<ResT> awaitable) {
-    std::cerr << "Can do" << std::endl;
-    while (!awaitable.GetHandle().done()) {
-        assert(!TimedEventLoop::IsEmpty());
-        TimedEventLoop::Resume();
-    }
-    return awaitable.GetHandle().promise().GetResult();
+MainTask co_main() {
+    std::apply([] (auto... args) {
+        ((std::cout << args << std::endl), ...);
+    }, co_await WhenAll(Print(), Print()));
+    co_return;
 }
 
 int main() {
-    std::cout << sync_wait(Print()) << std::endl;
-
+    co_main().RunLoop<TimedEventLoop>();
 }
+
