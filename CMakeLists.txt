@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.31)
-project(untitled)
+project(cpp-coro-framework)
 
 set(CMAKE_CXX_STANDARD 26)
 
@@ -25,6 +25,10 @@ CPMAddPackage("gh:boostorg/config#boost-1.88.0")
 CPMAddPackage("gh:boostorg/stacktrace#boost-1.88.0")
 
 
-add_executable(untitled main.cpp)
+add_library(coros src/noop.cpp)
 
-target_link_libraries(untitled Boost::stacktrace)
+target_include_directories(coros PUBLIC include)
+
+target_link_libraries(coros Boost::stacktrace)
+
+add_subdirectory(examples)

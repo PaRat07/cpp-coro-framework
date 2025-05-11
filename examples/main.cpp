@@ -6,8 +6,6 @@
 #include "coro_utility.h"
 
 
-
-// USER CODE
 using namespace std::chrono_literals;
 
 Task<int> Get(int x) noexcept {
