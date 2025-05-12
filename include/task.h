@@ -98,13 +98,10 @@ public:
     Task() = default;
 
     ~Task() {
-        if (handle_) {
-            handle_.destroy();
-        }
+        handle_.destroy();
     }
 
-    Task(Task&& other) : handle_(std::exchange(other.handle_, {})) {
-    }
+    Task(Task&& other) = delete;
 
     Task(const Task& other) = delete;
 

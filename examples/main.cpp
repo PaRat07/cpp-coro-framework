@@ -25,11 +25,13 @@ MainTask co_main() {
     std::apply([] (auto... args) {
         ((std::cout << args << std::endl), ...);
     }, co_await WhenAll(Print(), Print()));
+
     co_return;
 }
 
 
 int main() {
-    co_main().RunLoop<TimedEventLoop>();
+    auto main = co_main();
+    main.RunLoop();
 }
 

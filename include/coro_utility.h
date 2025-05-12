@@ -5,7 +5,7 @@
 #include "task.h"
 
 // usage std::coroutine_handle<> my_handle = co_await Self();
-auto Self() {
+inline auto Self() {
     struct SelfAwaitable {
         bool await_ready() const noexcept { return false; }
 

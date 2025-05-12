@@ -50,6 +50,12 @@ private:
 
 
 // suspend this coroutine for dur time
-TimedEventLoop::AwaitableByTime SleepFor(std::chrono::steady_clock::duration dur) noexcept {
+inline TimedEventLoop::AwaitableByTime SleepForImpl(std::chrono::steady_clock::duration dur) noexcept {
     return TimedEventLoop::AwaitableByTime{ std::chrono::steady_clock::now() + dur };
+}
+
+// suspend this coroutine for dur time
+inline Task<> SleepFor(std::chrono::steady_clock::duration dur) noexcept {
+    co_await SleepForImpl(dur);
+    co_return;
 }

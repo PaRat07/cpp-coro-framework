@@ -37,7 +37,7 @@
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS_DEBUG": "-fstack-protector-all -fsanitize=address -g -fno-omit-frame-pointer -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG -D_LIBCPP_DEBUG -D_LIBCPP_ENABLE_DEBUG_MODE -D_LIBCPP_DEBUG_LEVEL=2 -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -D_LIBCPP_ENABLE_CONTRACTS"
+        "CMAKE_CXX_FLAGS_DEBUG": "-fstack-protector-all -fsanitize=leak -g -fno-omit-frame-pointer -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG -D_LIBCPP_DEBUG -D_LIBCPP_ENABLE_DEBUG_MODE -D_LIBCPP_DEBUG_LEVEL=2 -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS -D_LIBCPP_ENABLE_CONTRACTS"
       }
     },
     {
