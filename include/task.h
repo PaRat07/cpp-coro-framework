@@ -151,5 +151,20 @@ struct Task<void>::Promise {
     void return_void() noexcept {}
 
     std::suspend_never initial_suspend() noexcept { return {}; }
-    std::suspend_never final_suspend() noexcept { return {}; }
+    auto final_suspend() noexcept {
+        struct FinalAwaiter {
+            bool await_ready() const noexcept {
+                return false;
+            }
+
+            void await_suspend(std::coroutine_handle<Promise> handle) noexcept {
+                if (handle.promise().to_resume) {
+                    handle.promise().to_resume.resume();
+                }
+            }
+
+            void await_resume() noexcept {}
+        };
+        return FinalAwaiter{};
+    }
 };
