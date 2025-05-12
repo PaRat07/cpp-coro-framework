@@ -41,7 +41,7 @@ public:
             ::operator delete(data);
         }
 
-        void return_value(auto&& res) noexcept { result.template emplace<Result>(std::forward<decltype(res)>(res)); }
+        void return_value(Result&& res) noexcept { result.template emplace<Result>(std::move(res)); }
 
         std::suspend_always initial_suspend() noexcept { return {}; }
 

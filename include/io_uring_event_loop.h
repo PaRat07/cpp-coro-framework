@@ -53,18 +53,20 @@ class IOUringEventLoop {
     std::coroutine_handle<> handle;
   };
 
-  void Resume(auto &&st_mach) {
+  static void Resume() {
       static constexpr size_t kMaxPeek = 20;
       std::array<io_uring_cqe*, kMaxPeek> cqes;
       size_t ready_cnt = io_uring_peek_batch_cqe(&holder.ring, cqes.data(), kMaxPeek);
       holder.cur_in -= ready_cnt;
       for (io_uring_cqe *copl : cqes | std::views::take(ready_cnt)) {
-        std::coroutine_handle<>::from_address(std::bit_cast<void*>(copl->user_data)).resume();
+        ResHolder &res_ref = *std::bit_cast<ResHolder*>(copl->user_data);
+        res_ref.cnt = copl->res;
+        res_ref.handle.resume();
         io_uring_cqe_seen(&holder.ring, copl);
       }
   }
 
-  static bool Empty() {
+  static bool IsEmpty() {
     return holder.cur_in == 0;
   }
 
