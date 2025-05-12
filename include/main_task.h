@@ -22,25 +22,6 @@ public:
             exc_ptr = std::current_exception();
         }
 
-        void* operator new(std::size_t n) {
-            if (n > main_task_aloc_buf.size()) [[unlikely]] {
-                std::println(std::cerr, "Unable to allocate MainTask on stack because it's size is greater than buffer's one({} > {})", n, main_task_aloc_buf.size());
-                return ::operator new(n);
-            } else if (used_main_task_buf) [[unlikely]] {
-                std::println(std::cerr, "Unable to allocate MainTask on stack because it's allocated more than one time (you must use MainTask only for co_main)");
-                return ::operator new(n);
-            }
-            used_main_task_buf = true;
-            return main_task_aloc_buf.data();
-        }
-
-        void operator delete(void *data) {
-            if (data != main_task_aloc_buf.data()) [[unlikely]] {
-                std::println(std::cerr, "Deallocating MainTask allocated on heap");
-                ::operator delete(data);
-            }
-        }
-
         void return_void() noexcept {}
 
         std::suspend_never initial_suspend() noexcept { return {}; }

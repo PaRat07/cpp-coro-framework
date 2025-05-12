@@ -34,7 +34,7 @@ struct UringHolder {
 class IOUringEventLoop {
  public:
   struct ResHolder {
-    size_t cnt;
+    int cnt = -132;
     std::coroutine_handle<> handle;
   };
 
@@ -45,6 +45,7 @@ class IOUringEventLoop {
       holder.cur_in -= ready_cnt;
       for (io_uring_cqe *copl : cqes | std::views::take(ready_cnt)) {
         ResHolder &res_ref = *std::bit_cast<ResHolder*>(copl->user_data);
+        std::clog << copl->res << std::endl;
         res_ref.cnt = copl->res;
         res_ref.handle.resume();
         io_uring_cqe_seen(&holder.ring, copl);
@@ -106,7 +107,7 @@ class IOUringEventLoop {
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       res.handle = handle;
       io_uring_sqe* sqe = io_uring_get_sqe(&holder.ring);
-      io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr*>(&data), const_cast<socklen_t*>(&data_sz), 0);
+      io_uring_prep_accept(sqe, fd, nullptr, nullptr, 0);
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_submit(&holder.ring);
       ++holder.cur_in;
@@ -116,10 +117,7 @@ class IOUringEventLoop {
       return res.cnt;
     }
 
-    static inline const socklen_t data_sz = sizeof(sockaddr_in);
-
     int fd;
-    sockaddr_in data;
     ResHolder res;
   };
 
@@ -158,15 +156,9 @@ consteval in_addr operator""_addr(const char *data, size_t sz) {
   return { ans };
 }
 
-inline auto AcceptIPV4(int fd, in_addr addr, uint16_t port, sa_family_t family) -> Task<int> {
+inline auto AcceptIPV4(int fd) -> Task<int> {
   co_return co_await IOUringEventLoop::AcceptIPV4Awaitable {
-    .fd = fd,
-    .data = {
-        .sin_family = family,
-        .sin_port = port,
-        .sin_addr = addr
-      },
-    .res = {}
+    .fd = fd
   };
 }
 

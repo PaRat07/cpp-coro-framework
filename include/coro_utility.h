@@ -24,7 +24,10 @@ inline auto Self() {
 }
 
 template<typename T>
-Task<std::conditional_t<std::is_same_v<T, void>, std::type_identity<void>, T>> Devoidify([[clang::coro_await_elidable_argument]] Task<T>&& task) {
+using DevoidifyedT = std::conditional_t<std::is_same_v<T, void>, std::type_identity<void>, T>;
+
+template<typename T>
+Task<DevoidifyedT<T>> Devoidify([[clang::coro_await_elidable_argument]] Task<T>&& task) {
     if constexpr (std::is_same_v<T, void>) {
         co_await task;
         co_return {};
@@ -37,6 +40,6 @@ Task<std::conditional_t<std::is_same_v<T, void>, std::type_identity<void>, T>> D
 // waits for all the coros and returns tuple of their results
 // if task returns void it returns std::type_identity<void>
 template<typename... Ts>
-Task<std::tuple<Ts...>> WhenAll([[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) {
+Task<std::tuple<DevoidifyedT<Ts>...>> WhenAll([[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) {
     co_return std::tuple { co_await Devoidify(std::move(tasks))... };
 }

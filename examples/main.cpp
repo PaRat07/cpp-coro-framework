@@ -6,7 +6,7 @@
 #include "main_task.h"
 #include "coro_utility.h"
 
-
+#include "errno.h"
 
 using namespace std::chrono_literals;
 
@@ -47,8 +47,35 @@ MainTask co_main() {
 }
 
 
+auto Loop(int fd) -> Task<> {
+    for (int i = 0; i < 5; ++i) {
+        int connfd = co_await AcceptIPV4(fd);
+        co_await Write(connfd, u8"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nContent-Type: text/plain\r\n\r\nHello, world!\n", 0);
+    }
+}
+
+
+template<size_t... Inds>
+MainTask co_server(std::index_sequence<Inds...>) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    sockaddr_in addr;
+    addr.sin_family = AF_INET;          // IPv4
+    addr.sin_addr.s_addr = INADDR_ANY;  // 0.0.0.0
+    addr.sin_port = htons(8888);        // Port 8888
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        throw std::system_error(errno, std::system_category(), "bind error");
+    }
+
+    if (listen(fd, SOCK_STREAM) < 0) {
+        close(fd);
+        throw std::system_error(errno, std::system_category(), "listen error");
+    }
+    co_await WhenAll(Loop((Inds, fd))...);
+    co_return;
+}
+
 int main() {
-    // co_main().RunLoop<TimedEventLoop, IOUringEventLoop>();
-    std::cout << "123.123.123.123"_addr.s_addr << std::endl;
+    co_server(std::make_index_sequence<50>{}).RunLoop<TimedEventLoop, IOUringEventLoop>();
 }
 
