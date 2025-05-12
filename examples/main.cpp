@@ -31,7 +31,6 @@ MainTask co_main() {
 
 
 int main() {
-    auto main = co_main();
-    main.RunLoop();
+    co_main().RunLoop<TimedEventLoop>();
 }
 

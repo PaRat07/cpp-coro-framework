@@ -20,7 +20,7 @@ class [[CORO_ATTRIBUTES]] Task {
 public:
     struct Promise {
         std::variant<Result, std::exception_ptr> result;
-        std::coroutine_handle<> to_resume;
+        std::coroutine_handle<> caller_handle;
 
         Task get_return_object() noexcept {
             return Task { std::coroutine_handle<Promise>::from_promise(*this) };
@@ -43,23 +43,22 @@ public:
 
         void return_value(auto&& res) noexcept { result.template emplace<Result>(std::forward<decltype(res)>(res)); }
 
-        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_always initial_suspend() noexcept { return {}; }
 
-        auto final_suspend() noexcept {
-            struct FinalAwaiter {
-                bool await_ready() const noexcept {
-                    return false;
-                }
+        struct FinalAwaiter {
+            bool await_ready() const noexcept {
+                return false;
+            }
 
-                void await_suspend(std::coroutine_handle<Promise> handle) noexcept {
-                    if (handle.promise().to_resume) {
-                        handle.promise().to_resume.resume();
-                    }
-                }
+            auto await_suspend(std::coroutine_handle<Promise> handle) noexcept {
+                return handle.promise().caller_handle;
+            }
 
-                void await_resume() noexcept {}
-            };
-            return FinalAwaiter{};
+            void await_resume() noexcept {}
+        };
+
+        FinalAwaiter final_suspend() noexcept {
+            return {};
         }
 
         Result GetResult() {
@@ -71,22 +70,23 @@ public:
     };
 
     struct Awaiter {
-        Promise &promise;
+         std::coroutine_handle<Promise> handle;
 
         bool await_ready() const noexcept { return false; }
 
-        void await_suspend(std::coroutine_handle<> calling) noexcept {
-            promise.to_resume = calling;
+        auto await_suspend(std::coroutine_handle<> calling) noexcept {
+            handle.promise().caller_handle = calling;
+            return handle;
         }
 
         void await_resume() noexcept requires(std::is_same_v<Result, void>) {
-            if (promise.exc_ptr) {
-                std::rethrow_exception(promise.exc_ptr);
+            if (handle.promise().exc_ptr) {
+                std::rethrow_exception(handle.promise().exc_ptr);
             }
         }
 
         Result await_resume() noexcept requires(!std::is_same_v<Result, void>) {
-            return std::move(promise.result).visit(overloaded {
+            return std::move(handle.promise().result).visit(overloaded {
                 [] (Result &&res)               -> Result&&{ return res; },
                 [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); }
             });
@@ -105,7 +105,7 @@ public:
 
     Task(const Task& other) = delete;
 
-    Awaiter operator co_await() noexcept { return Awaiter { handle_.promise() }; }
+    Awaiter operator co_await() noexcept { return Awaiter { handle_ }; }
 
     std::coroutine_handle<Promise> GetHandle() {
         return handle_;
@@ -122,7 +122,7 @@ private:
 template <>
 struct Task<void>::Promise {
     std::exception_ptr exc_ptr;
-    std::coroutine_handle<> to_resume;
+    std::coroutine_handle<> caller_handle;
 
     Task get_return_object() noexcept {
         return Task { std::coroutine_handle<Promise>::from_promise(*this) };
@@ -150,21 +150,21 @@ struct Task<void>::Promise {
 
     void return_void() noexcept {}
 
-    std::suspend_never initial_suspend() noexcept { return {}; }
-    auto final_suspend() noexcept {
-        struct FinalAwaiter {
-            bool await_ready() const noexcept {
-                return false;
-            }
+    std::suspend_always initial_suspend() noexcept { return {}; }
 
-            void await_suspend(std::coroutine_handle<Promise> handle) noexcept {
-                if (handle.promise().to_resume) {
-                    handle.promise().to_resume.resume();
-                }
-            }
+    struct FinalAwaiter {
+        bool await_ready() const noexcept {
+            return false;
+        }
 
-            void await_resume() noexcept {}
-        };
-        return FinalAwaiter{};
+        auto await_suspend(std::coroutine_handle<Promise> handle) noexcept {
+           return handle.promise().caller_handle;
+        }
+
+        void await_resume() noexcept {}
+    };
+
+    FinalAwaiter final_suspend() noexcept {
+        return {};
     }
 };
