@@ -30,5 +30,6 @@ add_library(coros src/noop.cpp)
 target_include_directories(coros PUBLIC include)
 
 target_link_libraries(coros Boost::stacktrace)
+target_link_options(coros PUBLIC -luring)
 
 add_subdirectory(examples)
