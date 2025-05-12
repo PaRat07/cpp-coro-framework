@@ -22,6 +22,11 @@ public:
             exc_ptr = std::current_exception();
         }
 
+        void* operator new(std::size_t n) {
+            std::println("Allocated: {}", n);
+            return ::operator new(n);
+        }
+
         void return_void() noexcept {}
 
         std::suspend_never initial_suspend() noexcept { return {}; }

@@ -14,6 +14,7 @@ RUN apt install -y git
 RUN mkdir workdir
 WORKDIR workdir
 COPY . .
-CMD ["make", "run-debug"]
+EXPOSE 8080
+CMD ["make", "run-release"]
 
 
