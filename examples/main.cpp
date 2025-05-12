@@ -48,6 +48,7 @@ MainTask co_main() {
 
 
 int main() {
-    co_main().RunLoop<TimedEventLoop, IOUringEventLoop>();
+    // co_main().RunLoop<TimedEventLoop, IOUringEventLoop>();
+    std::cout << "123.123.123.123"_addr.s_addr << std::endl;
 }
 

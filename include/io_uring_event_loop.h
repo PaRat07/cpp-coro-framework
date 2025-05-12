@@ -9,27 +9,12 @@
 
 #include "unistd.h"
 #include "liburing.h"
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "task.h"
 
 
-struct File {
-public:
-  enum class CreateTag {
-    kOpen,
-    kCreate,
-    kSocket,
-    kAccept,
-    kPipe,
-    kFileno,
-    kDup,
-    kDup2
-
-  };
-
-private:
-  int fd;
-};
 
 struct UringHolder {
   UringHolder() {
@@ -115,6 +100,29 @@ class IOUringEventLoop {
     ResHolder res;
   };
 
+  struct AcceptIPV4Awaitable {
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      res.handle = handle;
+      io_uring_sqe* sqe = io_uring_get_sqe(&holder.ring);
+      io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr*>(&data), const_cast<socklen_t*>(&data_sz), 0);
+      sqe->user_data = std::bit_cast<__u64>(&res);
+      io_uring_submit(&holder.ring);
+      ++holder.cur_in;
+    }
+
+    int await_resume() const noexcept {
+      return res.cnt;
+    }
+
+    static inline const socklen_t data_sz = sizeof(sockaddr_in);
+
+    int fd;
+    sockaddr_in data;
+    ResHolder res;
+  };
+
  private:
   static inline UringHolder holder;
 };
@@ -134,3 +142,31 @@ inline auto Write(int fd, std::span<const char8_t> data, off_t off) -> Task<int>
     .off = off
   };
 }
+
+consteval in_addr operator""_addr(const char *data, size_t sz) {
+  std::string_view sv = { data, sz };
+  uint32_t ans = 0;
+  uint32_t cur_num = 0;
+  for (char i : sv) {
+    if (i == '.') {
+      ans = ans * 256 + std::exchange(cur_num, 0);
+    } else {
+      cur_num = cur_num * 10 + (i - '0');
+    }
+  }
+  ans = ans * 256 + cur_num;
+  return { ans };
+}
+
+inline auto AcceptIPV4(int fd, in_addr addr, uint16_t port, sa_family_t family) -> Task<int> {
+  co_return co_await IOUringEventLoop::AcceptIPV4Awaitable {
+    .fd = fd,
+    .data = {
+        .sin_family = family,
+        .sin_port = port,
+        .sin_addr = addr
+      },
+    .res = {}
+  };
+}
+
