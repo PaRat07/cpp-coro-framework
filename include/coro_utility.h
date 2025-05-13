@@ -36,10 +36,46 @@ Task<DevoidifyedT<T>> Devoidify([[clang::coro_await_elidable_argument]] Task<T>&
     }
 }
 
+template<typename T>
+Task<> SaveTo([[clang::coro_await_elidable_argument]] Task<T> &&task, T &place) {
+    place = co_await task;
+    co_return;
+}
+
+template<std::same_as<Task<>>... Ts>
+Task<> WhenAllImpl([[clang::coro_await_elidable_argument]] Ts&&... tasks) {
+    std::coroutine_handle<> self = co_await Self();
+    ((tasks.GetHandle().promise().caller_handle = self), ...);
+    (tasks.GetHandle().resume(), ...);
+    for (size_t i = 0; i < sizeof...(Ts); ++i) {
+        co_await std::suspend_always{};
+    }
+    co_return;
+}
+
 
 // waits for all the coros and returns tuple of their results
 // if task returns void it returns std::type_identity<void>
 template<typename... Ts>
 Task<std::tuple<DevoidifyedT<Ts>...>> WhenAll([[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) {
-    co_return std::tuple { co_await Devoidify(std::move(tasks))... };
+    std::tuple<DevoidifyedT<Ts>...> ans;
+    co_await [&ans] <size_t... Inds> (std::index_sequence<Inds...>, [[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) -> Task<> {
+        co_await WhenAllImpl(SaveTo(Devoidify(std::move(tasks...[Inds])), std::get<Inds>(ans))...);
+    } (std::make_index_sequence<sizeof...(Ts)>{}, std::move(tasks)...);
+
+    co_return ans;
+}
+
+Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) {
+    std::coroutine_handle<> self = co_await Self();
+    for (auto &i : tasks) {
+        i.GetHandle().promise().caller_handle = self;
+    }
+    for (auto &i : tasks) {
+        i.GetHandle().resume();
+    }
+    for (size_t i = 0; i < tasks.size(); ++i) {
+        co_await std::suspend_always{};
+    }
+    co_return;
 }

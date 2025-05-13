@@ -26,7 +26,7 @@
         "CMAKE_CXX_COMPILER" : "/usr/bin/clang++-20",
         "CMAKE_LINKER_TYPE" : "LLD",
         "CMAKE_CXX_STANDARD" : "26",
-        "CMAKE_CXX_FLAGS" : "-std=c++2c -fexperimental-library -D_LIBCPP_ENABLE_EXPERIMENTAL -stdlib=libc++ -Wall -Wpedantic -Wextra -Wno-switch-enum -Wno-signed-enum-bitfield -Wno-deprecated-register -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++98-c++11-compat-pedantic -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wno-missing-prototypes -Wno-documentation -Wno-documentation-unknown-command -Wno-weak-vtables -Wno-unused-const-variable -Wno-format-nonliteral -Wno-global-constructors -Wno-exit-time-destructors -Wno-error=padded -Wno-gcc-compat -D_LIBCPP_ABI_ENABLE_UNIQUE_PTR_TRIVIAL_ABI"
+        "CMAKE_CXX_FLAGS" : "-std=c++2c -fexperimental-library -D_LIBCPP_ENABLE_EXPERIMENTAL -stdlib=libc++ -Wall -Wpedantic -Wextra -Wno-unused-value -Wno-switch-enum -Wno-signed-enum-bitfield -Wno-deprecated-register -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++98-c++11-compat-pedantic -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wno-missing-prototypes -Wno-documentation -Wno-documentation-unknown-command -Wno-weak-vtables -Wno-unused-const-variable -Wno-format-nonliteral -Wno-global-constructors -Wno-exit-time-destructors -Wno-error=padded -Wno-gcc-compat -D_LIBCPP_ABI_ENABLE_UNIQUE_PTR_TRIVIAL_ABI"
       }
     },
     {

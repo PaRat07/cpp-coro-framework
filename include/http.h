@@ -30,7 +30,7 @@ ReqType ParseRequestType(std::string_view sv) {
 
 struct HttpRequest {
   ReqType req_type;
-  bool keep_alive = false;
+  bool keep_alive = true;
   std::string request_target;
   std::string http_version;
   std::string host;
@@ -60,6 +60,11 @@ public:
       ans.request_target = request_line.substr(0, rt_length);
       request_line.remove_prefix(rt_length + 1);
       ans.http_version = request_line;
+    }
+    for (std::string_view line = co_await GetLine(); !line.empty(); line = co_await GetLine()) {
+      if (line.starts_with("Connection")) {
+        ans.keep_alive = line.ends_with("keep-alive");
+      }
     }
     co_return ans;
   }
@@ -94,7 +99,7 @@ public:
 
   Task<> ReadMore() {
     std::ranges::copy(cur_have, buf_.begin());
-    cur_have = { buf_.data(), co_await Recieve(fd_, std::span(buf_).subspan(cur_have.size())) };
+    cur_have = { buf_.data(), cur_have.size() + co_await Recieve(fd_, std::span(buf_).subspan(cur_have.size())) };
   }
 
   void Reconnect(int new_fd) {

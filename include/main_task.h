@@ -29,7 +29,7 @@ public:
 
         void return_void() noexcept {}
 
-        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_always initial_suspend() noexcept { return {}; }
 
         std::suspend_always final_suspend() noexcept { return {}; }
     };
@@ -48,6 +48,8 @@ public:
 
     template<typename... EvLoops>
     void RunLoop() {
+        (EvLoops::Init(), ...);
+        handle_.resume();
         while ((!EvLoops::IsEmpty() || ...)) {
             ((EvLoops::Resume()), ...);
         }

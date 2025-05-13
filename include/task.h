@@ -6,6 +6,7 @@
 #include <print>
 #include <iostream>
 #include <boost/stacktrace/stacktrace.hpp>
+#include <cassert>
 
 template<class... Ts>
 struct overloaded : Ts... { using Ts::operator()...; };
@@ -79,13 +80,13 @@ public:
             return handle;
         }
 
-        void await_resume() noexcept requires(std::is_same_v<Result, void>) {
+        void await_resume() requires(std::is_same_v<Result, void>) {
             if (handle.promise().exc_ptr) {
                 std::rethrow_exception(handle.promise().exc_ptr);
             }
         }
 
-        Result await_resume() noexcept requires(!std::is_same_v<Result, void>) {
+        Result await_resume() requires(!std::is_same_v<Result, void>) {
             return std::move(handle.promise().result).visit(overloaded {
                 [] (Result &&res)               -> Result&&{ return res; },
                 [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); }
@@ -98,12 +99,20 @@ public:
     Task() = default;
 
     ~Task() {
-        handle_.destroy();
+        if (handle_) {
+            handle_.destroy();
+        }
     }
 
-    Task(Task&& other) = delete;
+    Task(Task&& other) : handle_(std::exchange(other.handle_, {})) {}
 
     Task(const Task& other) = delete;
+
+    Task &operator=(Task &&other) {
+        assert(!handle_);
+        handle_ = std::exchange(other.handle_, {});
+        return *this;
+    }
 
     Awaiter operator co_await() noexcept { return Awaiter { handle_ }; }
 
