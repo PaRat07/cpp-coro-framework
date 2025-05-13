@@ -78,13 +78,36 @@ class IOUringEventLoop {
     ResHolder res;
   };
 
+
+  struct RecieveAwaitable {
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      res.handle = handle;
+      io_uring_sqe* sqe = io_uring_get_sqe(&holder.ring);
+      io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
+      sqe->user_data = std::bit_cast<__u64>(&res);
+      io_uring_submit(&holder.ring);
+      ++holder.cur_in;
+    }
+
+    int await_resume() const noexcept {
+      return res.cnt;
+    }
+
+    int fd;
+    std::span<char8_t> data;
+    int flags;
+    ResHolder res;
+  };
+
   struct WriteAwaitable {
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       res.handle = handle;
       io_uring_sqe* sqe = io_uring_get_sqe(&holder.ring);
-      io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
+      io_uring_prep_send(sqe, fd, data.data(), data.size(), 0);
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_submit(&holder.ring);
       ++holder.cur_in;
@@ -124,7 +147,7 @@ class IOUringEventLoop {
   static inline UringHolder holder;
 };
 
-inline auto Read(int fd, std::span<char8_t> data, off_t off) -> Task<int> {
+inline auto Read(int fd, std::span<char8_t> data, off_t off) -> Task<size_t> {
   co_return co_await IOUringEventLoop::ReadAwaitable {
     .fd = fd,
     .data = data,
@@ -132,7 +155,15 @@ inline auto Read(int fd, std::span<char8_t> data, off_t off) -> Task<int> {
   };
 }
 
-inline auto Write(int fd, std::span<const char8_t> data, off_t off) -> Task<int> {
+inline auto Recieve(int fd, std::span<char8_t> data, int flags = 0) -> Task<size_t> {
+  co_return co_await IOUringEventLoop::RecieveAwaitable {
+    .fd = fd,
+    .data = data,
+    .flags = flags
+  };
+}
+
+inline auto Write(int fd, std::span<const char8_t> data, off_t off) -> Task<size_t> {
   co_return co_await IOUringEventLoop::WriteAwaitable {
     .fd = fd,
     .data = data,

@@ -1,3 +1,4 @@
+#include <http.h>
 #include <chrono>
 #include "io_uring_event_loop.h"
 
@@ -47,27 +48,27 @@ MainTask co_main() {
 }
 
 
-constexpr std::u8string_view hello_world_text =
-    u8"HTTP/1.1 200 OK\r\n"
+constexpr std::string_view hello_world_text =
+    "HTTP/1.1 200 OK\r\n"
     "Content-Length: 15\r\n"
     "Content-Type: text/plain; charset=UTF-8\r\n"
     "Server: Example\r\n"
-    "Date: Wed, 17 Apr 2013 12:00:00 GMT\r\n\r\n"
+    "Date: {:%a, %d %b %Y %H:%M:%S GMT}\r\n"
+    "Connection: keep-alive\r\n\r\n"
     "Hello, world!\r\n";
 
 auto Loop(int fd) -> Task<> {
+    int connfd = co_await AcceptIPV4(fd);
+    bool reuse_connection = true;
+    HttpParser<100> parser(connfd);
     while (true) {
-        int connfd = co_await AcceptIPV4(fd);
-        std::array<char8_t, 100> buf;
-        ssize_t read_cnt = co_await Read(connfd, buf, 0);
-        auto str = std::u8string_view(buf.data(), read_cnt);
-
-        std::u8string_view prefix = str.substr(4, str.substr(4).find_first_of(' '));
-        if (prefix == u8"/test") {
-            co_await Write(connfd, hello_world_text, 0);
-        } else {
-            throw std::runtime_error("incorrect prefix");
+        if (!reuse_connection) {
+            connfd = co_await AcceptIPV4(fd);
+            parser.Reconnect(connfd);
         }
+        HttpRequest req = co_await parser.ParseRequest();
+        reuse_connection = req.keep_alive;
+        co_await Write(connfd, std::format(hello_world_text, std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now())), 0)
     }
 }
 
@@ -93,6 +94,8 @@ MainTask co_server(std::index_sequence<Inds...>) {
 }
 
 int main() {
+    // std::cout << std::format("{}", std::chrono::system_clock::now()) << std::endl;
+    // return 0;
     co_server(std::make_index_sequence<50>{}).RunLoop<TimedEventLoop, IOUringEventLoop>();
 }
 
