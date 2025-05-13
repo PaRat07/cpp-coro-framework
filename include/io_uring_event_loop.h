@@ -73,7 +73,7 @@ class IOUringEventLoop {
     }
 
     int fd;
-    std::span<char8_t> data;
+    std::span<char> data;
     off_t off;
     ResHolder res;
   };
@@ -96,7 +96,7 @@ class IOUringEventLoop {
     }
 
     int fd;
-    std::span<char8_t> data;
+    std::span<char> data;
     int flags;
     ResHolder res;
   };
@@ -118,7 +118,7 @@ class IOUringEventLoop {
     }
 
     int fd;
-    std::span<const char8_t> data;
+    std::span<const char> data;
     off_t off;
     ResHolder res;
   };
@@ -147,7 +147,7 @@ class IOUringEventLoop {
   static inline UringHolder holder;
 };
 
-inline auto Read(int fd, std::span<char8_t> data, off_t off) -> Task<size_t> {
+inline auto Read(int fd, std::span<char> data, off_t off) -> Task<size_t> {
   co_return co_await IOUringEventLoop::ReadAwaitable {
     .fd = fd,
     .data = data,
@@ -155,7 +155,7 @@ inline auto Read(int fd, std::span<char8_t> data, off_t off) -> Task<size_t> {
   };
 }
 
-inline auto Recieve(int fd, std::span<char8_t> data, int flags = 0) -> Task<size_t> {
+inline auto Recieve(int fd, std::span<char> data, int flags = 0) -> Task<size_t> {
   co_return co_await IOUringEventLoop::RecieveAwaitable {
     .fd = fd,
     .data = data,
@@ -163,7 +163,7 @@ inline auto Recieve(int fd, std::span<char8_t> data, int flags = 0) -> Task<size
   };
 }
 
-inline auto Write(int fd, std::span<const char8_t> data, off_t off) -> Task<size_t> {
+inline auto Write(int fd, std::span<const char> data, off_t off) -> Task<size_t> {
   co_return co_await IOUringEventLoop::WriteAwaitable {
     .fd = fd,
     .data = data,

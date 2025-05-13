@@ -12,29 +12,29 @@ enum class ReqType {
   kPatch
 };
 
-ReqType ParseRequestType(std::u8string_view sv) {
-  if (sv == u8"GET") {
+ReqType ParseRequestType(std::string_view sv) {
+  if (sv == "GET") {
     return ReqType::kGet;
-  } else if (sv == u8"POST") {
+  } else if (sv == "POST") {
     return ReqType::kPost;
-  } else if (sv == u8"PUT") {
+  } else if (sv == "PUT") {
     return ReqType::kPut;
-  } else if (sv == u8"DELETE") {
+  } else if (sv == "DELETE") {
     return ReqType::kDelete;
-  } else if (sv == u8"PATCH") {
+  } else if (sv == "PATCH") {
     return ReqType::kPatch;
   } else {
-    throw std::invalid_argument(std::format("invalid request type: {}", std::string_view(reinterpret_cast<const char*>(sv.data()), sv.size())));
+    throw std::invalid_argument(std::format("invalid request type: {}", sv));
   }
 }
 
 struct HttpRequest {
   ReqType req_type;
   bool keep_alive = false;
-  std::u8string request_target;
-  std::u8string http_version;
-  std::u8string host;
-  std::u8string body;
+  std::string request_target;
+  std::string http_version;
+  std::string host;
+  std::string body;
 };
 
 template<size_t kSz>
@@ -45,7 +45,7 @@ public:
   Task<HttpRequest> ParseRequest() {
     HttpRequest ans;
     { // parsing request-line
-      std::u8string_view request_line = co_await GetLine();
+      std::string_view request_line = co_await GetLine();
       if (std::ranges::count(request_line, ' ') != 2) [[unlikely]] {
         throw std::invalid_argument("http request's request-line must contain exactly 2 spaces");
       }
@@ -64,7 +64,7 @@ public:
     co_return ans;
   }
 
-  Task<std::u8string_view> GetLine() {
+  Task<std::string_view> GetLine() {
     size_t r_pos = cur_have.find_first_of('\r');
     if (r_pos == cur_have.npos) {
       co_await ReadMore();
@@ -73,13 +73,13 @@ public:
         throw std::invalid_argument("http request header is longer then buffer");
       }
     }
-    std::u8string_view ans = cur_have.substr(0, r_pos);
+    std::string_view ans = cur_have.substr(0, r_pos);
     cur_have.remove_prefix(r_pos + 2);
     co_return ans;
   }
 
-  Task<std::u8string> ReadBody(size_t len) {
-    std::u8string ans;
+  Task<std::string> ReadBody(size_t len) {
+    std::string ans;
     while (len > 0) {
       if (cur_have.empty()) {
         co_await ReadMore();
@@ -104,6 +104,6 @@ public:
 
 private:
   int fd_;
-  std::array<char8_t, kSz> buf_;
-  std::u8string_view cur_have;
+  std::array<char, kSz> buf_;
+  std::string_view cur_have;
 };

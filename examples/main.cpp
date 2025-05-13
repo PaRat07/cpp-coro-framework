@@ -11,10 +11,6 @@
 
 using namespace std::chrono_literals;
 
-std::ostream &operator<<(std::ostream &out, std::u8string_view u8sv) {
-    out << std::string_view(std::bit_cast<char*>(u8sv.data()), u8sv.size());
-    return out;
-}
 
 Task<int> Get(int x) noexcept {
     std::println("Before: {}", x);
@@ -23,13 +19,13 @@ Task<int> Get(int x) noexcept {
     co_return x;
 }
 
-Task<std::u8string> TestUring() {
-    std::u8string_view text = u8"goyda";
+Task<std::string> TestUring() {
+    std::string_view text = "goyda";
     int fd = open("/tmp/test.txt", O_CREAT | O_TRUNC | O_RDWR);
     if (co_await Write(fd, text, 0) != text.size()) {
         throw std::runtime_error("unable to write to file");
     }
-    std::array<char8_t, 50> buf;
+    std::array<char, 50> buf;
     size_t read_cnt = co_await Read(fd, buf, 0);
     co_return { buf.data(), read_cnt };
 }
@@ -68,7 +64,7 @@ auto Loop(int fd) -> Task<> {
         }
         HttpRequest req = co_await parser.ParseRequest();
         reuse_connection = req.keep_alive;
-        co_await Write(connfd, std::format(hello_world_text, std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now())), 0)
+        co_await Write(connfd, std::format(hello_world_text, std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now())), 0);
     }
 }
 
