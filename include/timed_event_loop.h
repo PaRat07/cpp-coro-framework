@@ -31,6 +31,10 @@ public:
         return tasks_.empty();
     }
 
+    static void Init() noexcept {
+        tasks_ = {};
+    }
+
     struct AwaitableByTime {
         bool await_ready() const noexcept {
             return resume_time <= std::chrono::steady_clock::now();

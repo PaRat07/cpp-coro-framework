@@ -11,6 +11,7 @@ file(
 )
 include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
+#CPMAddPackage("gh:boostorg/winapi#boost-1.88.0")
 
 #CPMAddPackage("gh:boostorg/winapi#boost-1.88.0")
 #CPMAddPackage("gh:boostorg/predef#boost-1.88.0")
@@ -24,21 +25,13 @@ include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 #CPMAddPackage("gh:boostorg/config#boost-1.88.0")
 #CPMAddPackage("gh:boostorg/stacktrace#boost-1.88.0")
 
-CPMAddPackage(
-        NAME libpq
-        GIT_REPOSITORY https://github.com/postgres/postgres.git
-        GIT_TAG REL_15_3    # pick the release you need
-        SOURCE_SUBDIR src/interfaces/libpq
-        OPTIONS
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-        -DBUILD_SHARED_LIBPQ=ON
-)
+#find_package(libpqxx REQUIRED)
 
 add_library(coros src/noop.cpp)
 
 target_include_directories(coros PUBLIC include)
 
-target_link_libraries(coros PUBLIC libpq)
-target_link_options(coros PUBLIC -luring)
+#target_link_libraries(coros PUBLIC libpqxx)
+target_link_options(coros PUBLIC -luring -lpqxx)
 
 add_subdirectory(examples)

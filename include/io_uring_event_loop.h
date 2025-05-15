@@ -11,6 +11,7 @@
 #include "liburing.h"
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <poll.h>
 
 #include "task.h"
 
@@ -170,6 +171,26 @@ class IOUringEventLoop {
     ResHolder res;
   };
 
+  struct PollAwaitable {
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      res.handle = handle;
+      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
+      io_uring_prep_poll_add(sqe, fd, POLLIN);
+      sqe->user_data = std::bit_cast<__u64>(&res);
+      io_uring_submit(&holder->ring);
+      ++holder->cur_in;
+    }
+
+    int await_resume() const noexcept {
+      return res.cnt;
+    }
+
+    int fd;
+    ResHolder res;
+  };
+
  private:
 
   static inline std::optional<UringHolder> holder;
@@ -224,6 +245,13 @@ consteval in_addr operator""_addr(const char *data, size_t sz) {
 
 inline auto AcceptIPV4(int fd) -> Task<int> {
   co_return co_await IOUringEventLoop::AcceptIPV4Awaitable {
+    .fd = fd
+  };
+}
+
+
+inline auto Poll(int fd) -> Task<int> {
+  co_return co_await IOUringEventLoop::PollAwaitable {
     .fd = fd
   };
 }
