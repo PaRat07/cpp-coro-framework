@@ -5,7 +5,7 @@
 #include <coroutine>
 #include <print>
 #include <iostream>
-#include <boost/stacktrace/stacktrace.hpp>
+// #include <boost/stacktrace/stacktrace.hpp>
 #include <cassert>
 
 template<class... Ts>
@@ -14,6 +14,7 @@ struct overloaded : Ts... { using Ts::operator()...; };
 // clang attributes for all the tasks
 #define CORO_ATTRIBUTES nodiscard, clang::coro_await_elidable, clang::coro_return_type, clang::coro_lifetimebound, clang::coro_only_destroy_when_complete
 
+constexpr bool kIsDebug = false;
 
 // async task for passing async further by stack
 template <typename Result = void>
@@ -32,13 +33,17 @@ public:
         }
 
         void* operator new(std::size_t n) {
-            std::println(std::cerr, "Allocated {} bytes at {}", n, __PRETTY_FUNCTION__);
-            std::cout << boost::stacktrace::stacktrace() << std::endl;
+            if constexpr (kIsDebug) {
+                std::println(std::cerr, "Allocated {} bytes at {}", n, __PRETTY_FUNCTION__);
+                // std::cout << boost::stacktrace::stacktrace() << std::endl;
+            }
             return ::operator new(n);
         }
 
         void operator delete(void *data) {
-            std::println(std::cerr, "Deallocated");
+            if constexpr (kIsDebug) {
+                std::println(std::cerr, "Deallocated");
+            }
             ::operator delete(data);
         }
 
@@ -142,12 +147,16 @@ struct Task<void>::Promise {
     }
 
     void* operator new(std::size_t n) {
-        std::println(std::cerr, "Allocated {} bytes at {}", n, __PRETTY_FUNCTION__);
+        if constexpr (kIsDebug) {
+            std::println(std::cerr, "Allocated {} bytes at {}", n, __PRETTY_FUNCTION__);
+        }
         return ::operator new(n);
     }
 
     void operator delete(void *data) {
-        std::println(std::cerr, "Deallocated");
+        if constexpr (kIsDebug) {
+            std::println(std::cerr, "Deallocated");
+        }
         ::operator delete(data);
     }
 

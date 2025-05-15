@@ -15,10 +15,9 @@
 #include "task.h"
 
 
-
 struct UringHolder {
   UringHolder() {
-    if (io_uring_queue_init(400, &ring, 0) < 0) {
+    if (io_uring_queue_init(3024, &ring, 0) < 0) {
       throw std::runtime_error("io_uring_queue_init failed");
     }
   }
@@ -39,7 +38,7 @@ class IOUringEventLoop {
   };
 
   static void Resume() {
-      static constexpr size_t kMaxPeek = 400;
+      static constexpr size_t kMaxPeek = 1024;
       std::array<io_uring_cqe*, kMaxPeek> cqes;
       size_t ready_cnt = io_uring_peek_batch_cqe(&holder->ring, cqes.data(), kMaxPeek);
       holder->cur_in -= ready_cnt;
@@ -91,6 +90,7 @@ class IOUringEventLoop {
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
       io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
       sqe->user_data = std::bit_cast<__u64>(&res);
+      sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
       io_uring_submit(&holder->ring);
       ++holder->cur_in;
     }
@@ -127,13 +127,36 @@ class IOUringEventLoop {
     ResHolder res;
   };
 
+  struct SendAwaitable {
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      res.handle = handle;
+      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
+      io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
+      sqe->user_data = std::bit_cast<__u64>(&res);
+      sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
+      io_uring_submit(&holder->ring);
+      ++holder->cur_in;
+    }
+
+    int await_resume() const noexcept {
+      return res.cnt;
+    }
+
+    int fd;
+    std::span<const char> data;
+    int flags;
+    ResHolder res;
+  };
+
   struct AcceptIPV4Awaitable {
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       res.handle = handle;
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      io_uring_prep_accept(sqe, fd, nullptr, nullptr, 0);
+      io_uring_prep_accept(sqe, fd, nullptr, nullptr, SOCK_NONBLOCK);
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_submit(&holder->ring);
       ++holder->cur_in;
@@ -173,6 +196,14 @@ inline auto Write(int fd, std::span<const char> data, off_t off) -> Task<size_t>
     .fd = fd,
     .data = data,
     .off = off
+  };
+}
+
+inline auto Send(int fd, std::span<const char> data, int flags) -> Task<size_t> {
+  co_return co_await IOUringEventLoop::SendAwaitable {
+    .fd = fd,
+    .data = data,
+    .flags = flags
   };
 }
 
