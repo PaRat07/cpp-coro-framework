@@ -15,10 +15,12 @@
 
 #include "task.h"
 
+namespace chr = std::chrono;
+using namespace std::chrono_literals;
 
 struct UringHolder {
   UringHolder() {
-    if (io_uring_queue_init(3024, &ring, 0) < 0) {
+    if (io_uring_queue_init(32024, &ring, 0) < 0) {
       throw std::runtime_error("io_uring_queue_init failed");
     }
   }
@@ -39,10 +41,14 @@ class IOUringEventLoop {
   };
 
   static void Resume() {
-      static constexpr size_t kMaxPeek = 1024;
+      static constexpr size_t kMaxPeek = 256;
       std::array<io_uring_cqe*, kMaxPeek> cqes;
       size_t ready_cnt = io_uring_peek_batch_cqe(&holder->ring, cqes.data(), kMaxPeek);
       holder->cur_in -= ready_cnt;
+      if (ready_cnt == 0) {
+        io_uring_submit(&holder->ring);
+        return;
+      }
       for (io_uring_cqe *copl : cqes | std::views::take(ready_cnt)) {
         ResHolder &res_ref = *std::bit_cast<ResHolder*>(copl->user_data);
         res_ref.cnt = copl->res;
@@ -68,7 +74,6 @@ class IOUringEventLoop {
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
       io_uring_prep_read(sqe, fd, data.data(), data.size(), off);
       sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_submit(&holder->ring);
       ++holder->cur_in;
     }
 
@@ -91,8 +96,7 @@ class IOUringEventLoop {
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
       io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
       sqe->user_data = std::bit_cast<__u64>(&res);
-      sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
-      io_uring_submit(&holder->ring);
+      // sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
       ++holder->cur_in;
     }
 
@@ -114,7 +118,6 @@ class IOUringEventLoop {
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
       io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
       sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_submit(&holder->ring);
       ++holder->cur_in;
     }
 
@@ -137,7 +140,6 @@ class IOUringEventLoop {
       io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
       sqe->user_data = std::bit_cast<__u64>(&res);
       sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
-      io_uring_submit(&holder->ring);
       ++holder->cur_in;
     }
 
@@ -159,7 +161,6 @@ class IOUringEventLoop {
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
       io_uring_prep_accept(sqe, fd, nullptr, nullptr, SOCK_NONBLOCK);
       sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_submit(&holder->ring);
       ++holder->cur_in;
     }
 
@@ -179,7 +180,6 @@ class IOUringEventLoop {
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
       io_uring_prep_poll_add(sqe, fd, POLLIN);
       sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_submit(&holder->ring);
       ++holder->cur_in;
     }
 
@@ -192,7 +192,8 @@ class IOUringEventLoop {
   };
 
  private:
-
+  static inline size_t cur_queued_until_submit_ = 0;
+  static inline std::chrono::steady_clock::time_point time_first_not_submitted_;
   static inline std::optional<UringHolder> holder;
 };
 

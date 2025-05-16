@@ -101,7 +101,8 @@ auto Loop(int fd, pqxx::connection &db_conn) -> Task<> {
 
 MainTask co_server(int fd) {
     std::array<Task<>, 3'000> tasks;
-    pqxx::connection db_conn;
+    std::string db_options = fmt::format("host=localhost port=5432 dbname=hello_world connect_timeout=10 password={} user={}", std::getenv("PGPASS"), std::getenv("PGUSER"));
+    pqxx::connection db_conn(db_options.data());
     for (int i = 0; i < tasks.size(); ++i) {
         tasks[i] = Loop(fd, db_conn);
     }
@@ -111,22 +112,17 @@ MainTask co_server(int fd) {
 
 int main() {
     signal(SIGPIPE, SIG_IGN);
-    // std::cout << std::format("{}", std::chrono::system_clock::now()) << std::endl;
-    // return 0;
-    // co_server(/*std::make_index_sequence<10>{}*/).RunLoop<IOUringEventLoop>();
-
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 
-    int opt = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    int one = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
         throw std::system_error(errno, std::system_category(), "setsockopt SO_REUSEADDR");
     }
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
         throw std::system_error(errno, std::system_category(), "setsockopt SO_REUSEPORT");
     }
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)); // Disable Nagle's algorithm
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));  // Keep connections alive
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
 
 
     sockaddr_in addr;
