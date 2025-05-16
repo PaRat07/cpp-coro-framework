@@ -45,16 +45,13 @@ class IOUringEventLoop {
       std::array<io_uring_cqe*, kMaxPeek> cqes;
       size_t ready_cnt = io_uring_peek_batch_cqe(&holder->ring, cqes.data(), kMaxPeek);
       holder->cur_in -= ready_cnt;
-      if (ready_cnt == 0) {
-        io_uring_submit(&holder->ring);
-        return;
-      }
       for (io_uring_cqe *copl : cqes | std::views::take(ready_cnt)) {
         ResHolder &res_ref = *std::bit_cast<ResHolder*>(copl->user_data);
         res_ref.cnt = copl->res;
         res_ref.handle.resume();
         io_uring_cqe_seen(&holder->ring, copl);
       }
+      io_uring_submit(&holder->ring);
   }
 
   static bool IsEmpty() {
