@@ -1,5 +1,3 @@
-#include <postgres.h>
-
 #include <http.h>
 #include <chrono>
 #include "io_uring_event_loop.h"
@@ -50,6 +48,13 @@ MainTask co_main() {
     co_return;
 }
 
+template<template<typename> bool T>
+void f(){}
+
+template<typename>
+using T = int;
+
 int main() {
+    f<T>();
     co_main().RunLoop<TimedEventLoop, IOUringEventLoop>();
 }

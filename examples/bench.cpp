@@ -2,50 +2,93 @@
 #include <chrono>
 #include "io_uring_event_loop.h"
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <rfl.hpp>
+#include <rfl/json.hpp>
+#include <sys/socket.h>
+#include <thread>
 #include "coro_utility.h"
+#include "errno.h"
 #include "main_task.h"
 #include "task.h"
 #include "timed_event_loop.h"
-#include <sys/socket.h>
-#include "errno.h"
-#include <thread>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
+#include <pqxx/pqxx>
 
 using namespace std::chrono_literals;
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
-constexpr std::string_view hello_world_text =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Length: 15\r\n"
-    "Content-Type: text/plain; charset=UTF-8\r\n"
-    "Server: Example\r\n"
-    "Date: {:%a, %d %b %Y %H:%M:%S GMT}\r\n"
-    "Connection: keep-alive\r\n\r\n"
-    "Hello, world!\r\n";
-auto Loop(int fd) -> Task<> {
+struct InvokeOnConstruct {
+    InvokeOnConstruct(auto &&f) {
+        f();
+    }
+};
+
+#define CONCAT_IMPL(a, b) a##b
+#define CONCAT(a, b) CONCAT_IMPL(a, b)
+#define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
+
+auto Loop(int fd, pqxx::connection &db_conn) -> Task<> {
+    ONCE {
+        db_conn.prepare("get_by_id", R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
+    };
     std::cout << "Started" << std::endl;
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(-1);
+    pqxx::nontransaction tx(db_conn);
     while (true) {
         int connfd = co_await AcceptIPV4(fd);
         bool reuse_connection = true;
         parser.Reconnect(connfd);
         try {
-            while (reuse_connection || true) {
+            while (reuse_connection) {
                 HttpRequest req = co_await parser.ParseRequest();
                 reuse_connection = req.keep_alive;
-                co_await SendResponse(connfd, resp_buf, {
-                    {
-                        { "Content-Type", "text/plain; charset=UTF-8" },
-                        { "Server", "Example" },
-                        { "Connection", "keep-alive" }
-                    },
-                    "Hello, world!"
-                });
-                // co_await Write(connfd, std::format(hello_world_text, std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now())), 0);
+                if (req.request_target == "/plaintext") {
+                    co_await SendResponse(connfd, resp_buf, {
+                        {
+                            { "Content-Type", "text/plain; charset=UTF-8" },
+                            { "Server", "Example" },
+                            { "Connection", "keep-alive" }
+                        },
+                        "Hello, world!"
+                    });
+                } else if (req.request_target == "/json") {
+                    struct JsonResp {
+                        std::string_view message;
+                    };
+                    std::string body = rfl::json::write(JsonResp{ .message = "Hello, World!" });
+                    co_await SendResponse(connfd, resp_buf, {
+                        {
+                            { "Content-Type", "application/json; charset=UTF-8" },
+                            { "Server", "Example" },
+                            { "Connection", "keep-alive" }
+                        },
+                        std::move(body)
+                    });
+                } else if (req.request_target == "/db") {
+                    int random_id = rand() % 10'000;
+                    struct DbResp {
+                        int id;
+                        int randomNumber;
+                    };
+                    DbResp resp;
+                    for (auto [resp_id, resp_num] : tx.query<int, int>(pqxx::prepped("get_by_id"), random_id)) {
+                        resp = { resp_id, resp_num };
+                    }
+                    std::string body = rfl::json::write(resp);
+                    co_await SendResponse(connfd, resp_buf, {
+                        {
+                            { "Content-Type", "application/json; charset=UTF-8" },
+                            { "Server", "Example" },
+                            { "Connection", "keep-alive" }
+                        },
+                        std::move(body)
+                    });
+                } else {
+                    throw std::runtime_error("incorrect prefix");
+                }
             }
         } catch (...) {
             close(connfd);
@@ -98,7 +141,8 @@ int main() {
         close(fd);
         throw std::system_error(errno, std::system_category(), "listen error");
     }
-    fork();fork();fork();fork();
+    // fork();fork();fork();fork();
+    pqxx::connection db_conn;
     co_server(fd).RunLoop<IOUringEventLoop>();
 }
 

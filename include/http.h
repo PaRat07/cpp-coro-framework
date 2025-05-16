@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fmt/chrono.h>
 #include "task.h"
 
 #include <chrono>
@@ -12,6 +13,8 @@ enum class ReqType {
   kDelete,
   kPatch
 };
+
+
 
 ReqType ParseRequestType(std::string_view sv) {
   if (sv == "GET") {
@@ -44,18 +47,6 @@ public:
   HttpParser(int fd) : fd_(fd) {}
 
   Task<HttpRequest> ParseRequest() {
-    while (true) {
-      co_await ReadMore();
-      size_t req_end = cur_have.find("\r\n\r\n");
-      if (req_end == cur_have.npos) {
-        cur_have = {};
-      } else {
-        req_end += 4;
-        std::copy_n(cur_have.begin() + req_end, cur_have.size() - req_end, buf_.begin());
-        cur_have = { buf_.data(), cur_have.size() - req_end };
-        co_return {};
-      }
-    }
     HttpRequest ans;
     { // parsing request-line
       std::string_view request_line = co_await GetLine();
@@ -126,8 +117,6 @@ private:
   std::string_view cur_have;
 };
 
-
-
 struct HttpResponse {
   std::vector<std::pair<std::string_view, std::string>> headers;
   std::string body;
@@ -152,16 +141,13 @@ Task<> SendResponse(int fd, std::span<char> storage, HttpResponse resp) {
   namespace rng = std::ranges;
   namespace chr = std::chrono;
 
-  static constexpr std::string_view kContentLengthName = "Content-Length: ";
-  static constexpr std::string_view kDateName = "Date: ";
-
   auto it = storage.begin();
   it = rng::copy("HTTP/1.1 200 OK\r\n"sv, it).out;
-  it = rng::copy(kContentLengthName, it).out;
+  it = rng::copy("Content-Length: ", it).out;
   it = rng::copy(ToString(resp.body.size()), it).out;
   it = rng::copy("\r\n"sv, it).out;
-  it = rng::copy(kDateName, it).out;
-  it = std::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n", chr::floor<chr::seconds>(chr::system_clock::now()));
+  it = rng::copy("Date: ", it).out;
+  it = fmt::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n", chr::floor<chr::seconds>(chr::system_clock::now()));
   for (auto &[key, val] : resp.headers) {
     it = rng::copy(key, it).out;
     it = rng::copy(": "sv, it).out;
@@ -173,37 +159,3 @@ Task<> SendResponse(int fd, std::span<char> storage, HttpResponse resp) {
   co_await Send(fd, storage.subspan(0, it - storage.begin()), 0);
   co_return;
 }
-
-
-// Task<> SendResponse(int fd, std::span<char> storage, HttpResponse resp) {
-//   using namespace std::string_view_literals;
-//    namespace chr = std::chrono;
-//   std::string date = std::format("{:%a, %d %b %Y %H:%M:%S GMT}", chr::floor<chr::seconds>(chr::system_clock::now()));
-//     size_t sz = "HTTP/1.1 200 OK\r\n"sv.size();
-//     sz += "Content-Length: "sv.size() + DigCnt(resp.body.size()) + 2;
-//     sz += "Date: "sv.size() + date.size() + 2;
-//     for (auto &&[key, val] : resp.headers) {
-//         sz += key.size() + 2 + val.size() + 2;
-//     }
-//     sz += 2 + resp.body.size();
-//     std::string resp_str;
-//     resp_str.reserve(sz);
-//     resp_str += "HTTP/1.1 200 OK\r\n";
-//     resp_str += "Content-Length: ";
-//     resp_str += ToString(resp.body.size());
-//     resp_str += "\r\n";
-//     resp_str += "Date: ";
-//     resp_str += date;
-//     resp_str += "\r\n";
-//
-//     for (auto &[key, val] : resp.headers) {
-//       resp_str += key;
-//       resp_str += ": ";
-//       resp_str += val;
-//       resp_str += "\r\n";
-//     }
-//     resp_str += "\r\n";
-//     resp_str += resp.body;
-//     co_await Send(fd, resp_str, 0);
-//     co_return;
-// }
