@@ -101,11 +101,11 @@ auto Loop(int fd, pqxx::connection &db_conn) -> Task<> {
 
 MainTask co_server(int fd) {
     std::array<Task<>, 3'000> tasks;
+    pqxx::connection db_conn;
     for (int i = 0; i < tasks.size(); ++i) {
-        tasks[i] = Loop(fd);
+        tasks[i] = Loop(fd, db_conn);
     }
     co_await WhenAll(tasks);
-
     co_return;
 }
 
@@ -142,7 +142,6 @@ int main() {
         throw std::system_error(errno, std::system_category(), "listen error");
     }
     // fork();fork();fork();fork();
-    pqxx::connection db_conn;
     co_server(fd).RunLoop<IOUringEventLoop>();
 }
 
