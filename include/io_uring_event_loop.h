@@ -20,7 +20,7 @@ using namespace std::chrono_literals;
 
 struct UringHolder {
   UringHolder() {
-    if (io_uring_queue_init(32024, &ring, 0) < 0) {
+    if (io_uring_queue_init(5000, &ring, 0) < 0) {
       throw std::runtime_error("io_uring_queue_init failed");
     }
   }
@@ -41,16 +41,16 @@ class IOUringEventLoop {
   };
 
   static void Resume() {
-      static constexpr size_t kMaxPeek = 256;
-      std::array<io_uring_cqe*, kMaxPeek> cqes;
-      size_t ready_cnt = io_uring_peek_batch_cqe(&holder->ring, cqes.data(), kMaxPeek);
-      holder->cur_in -= ready_cnt;
-      for (io_uring_cqe *copl : cqes | std::views::take(ready_cnt)) {
-        ResHolder &res_ref = *std::bit_cast<ResHolder*>(copl->user_data);
-        res_ref.cnt = copl->res;
+      io_uring_cqe *cqe;
+      unsigned head;
+      size_t cur_proc = 0;
+      io_uring_for_each_cqe(&holder->ring, head, cqe) {
+        ResHolder &res_ref = *std::bit_cast<ResHolder*>(cqe->user_data);
+        res_ref.cnt = cqe->res;
         res_ref.handle.resume();
-        io_uring_cqe_seen(&holder->ring, copl);
+        ++cur_proc;
       }
+      io_uring_cq_advance(&holder->ring, cur_proc);
       io_uring_submit(&holder->ring);
   }
 
@@ -153,10 +153,13 @@ class IOUringEventLoop {
   struct AcceptIPV4Awaitable {
     bool await_ready() const noexcept { return false; }
 
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
+    void await_suspend(std::coroutine_handle<> handle) {
       res.handle = handle;
       io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      io_uring_prep_accept(sqe, fd, nullptr, nullptr, SOCK_NONBLOCK);
+      if (sqe == nullptr) {
+        throw std::system_error(errno, std::system_category(), "io_uring_get_sqe failed");
+      }
+      io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len, SOCK_NONBLOCK);
       sqe->user_data = std::bit_cast<__u64>(&res);
       ++holder->cur_in;
     }
@@ -166,6 +169,8 @@ class IOUringEventLoop {
     }
 
     int fd;
+    sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
     ResHolder res;
   };
 

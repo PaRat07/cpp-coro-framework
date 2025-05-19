@@ -29,14 +29,14 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto Loop(int fd, pqxx::connection &db_conn) -> Task<> {
-    ONCE {
-        db_conn.prepare("get_by_id", R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
-    };
+auto Loop(int fd/*, pqxx::connection &db_conn*/) -> Task<> {
+    // ONCE {
+    //     db_conn.prepare("get_by_id", R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
+    // };
     std::cout << "Started" << std::endl;
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(-1);
-    pqxx::nontransaction tx(db_conn);
+    // pqxx::nontransaction tx(db_conn);
     while (true) {
         int connfd = co_await AcceptIPV4(fd);
         bool reuse_connection = true;
@@ -74,9 +74,9 @@ auto Loop(int fd, pqxx::connection &db_conn) -> Task<> {
                         int randomNumber;
                     };
                     DbResp resp;
-                    for (auto [resp_id, resp_num] : tx.query<int, int>(pqxx::prepped("get_by_id"), random_id)) {
-                        resp = { resp_id, resp_num };
-                    }
+                    // for (auto [resp_id, resp_num] : tx.query<int, int>(pqxx::prepped("get_by_id"), random_id)) {
+                    //     resp = { resp_id, resp_num };
+                    // }
                     std::string body = rfl::json::write(resp);
                     co_await SendResponse(connfd, resp_buf, {
                         {
@@ -90,21 +90,20 @@ auto Loop(int fd, pqxx::connection &db_conn) -> Task<> {
                     throw std::runtime_error("incorrect prefix");
                 }
             }
-        } catch (...) {
+        } catch (const std::exception &exc) {
             close(connfd);
-            std::cerr << "Failed" << std::endl;
-
+            std::cerr << "Failed: " << std::quoted(exc.what()) << std::endl;
         }
     }
 }
 
 
 MainTask co_server(int fd) {
-    std::array<Task<>, 3'000> tasks;
-    std::string db_options = fmt::format("host=localhost port=5432 dbname=hello_world connect_timeout=10 password={} user={}", std::getenv("PGPASS"), std::getenv("PGUSER"));
-    pqxx::connection db_conn(db_options.data());
+    std::array<Task<>, 3'000 * 0 + 10> tasks;
+    // std::string db_options = fmt::format("host=localhost port=5432 dbname=hello_world connect_timeout=10 password={} user={}", std::getenv("PGPASS"), std::getenv("PGUSER"));
+    // pqxx::connection db_conn;//(db_options.data());
     for (int i = 0; i < tasks.size(); ++i) {
-        tasks[i] = Loop(fd, db_conn);
+        tasks[i] = Loop(fd/*, db_conn*/);
     }
     co_await WhenAll(tasks);
     co_return;
@@ -137,10 +136,11 @@ int main() {
         close(fd);
         throw std::system_error(errno, std::system_category(), "listen error");
     }
-    // fork();fork();fork();fork();
+    fork();fork();fork();fork();
     co_server(fd).RunLoop<IOUringEventLoop>();
 }
 
 
 
 // wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 16384 --timeout 8 -t 16 http://localhost:8080/plaintext -s pipeline.lua -- 16
+// wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 1024  --timeout 8 -t 1  http://localhost:8080/plaintext -s pipeline.lua -- 16

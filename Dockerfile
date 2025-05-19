@@ -1,6 +1,11 @@
 FROM parat07/cpp-default:latest
-COPY . .
-RUN perf ls && asdasd
-CMD ["make", "run-release"]
+RUN apt install -y auditd
+RUN auditctl -e 0
+RUN auditctl -a never,task
+RUN systemctl stop iptables &&\
+    systemctl disable iptables
+
+
+#CMD ["make", "run-release"]
 
 

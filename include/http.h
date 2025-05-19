@@ -5,6 +5,8 @@
 
 #include <chrono>
 #include <io_uring_event_loop.h>
+#include <charconv>
+#include <algorithm>
 
 enum class ReqType {
   kGet,
@@ -48,6 +50,7 @@ public:
 
   Task<HttpRequest> ParseRequest() {
     HttpRequest ans;
+    size_t cont_length = 0;
     { // parsing request-line
       std::string_view request_line = co_await GetLine();
       if (std::ranges::count(request_line, ' ') != 2) [[unlikely]] {
@@ -66,20 +69,30 @@ public:
       ans.http_version = request_line;
     }
     for (std::string_view line = co_await GetLine(); !line.empty(); line = co_await GetLine()) {
-      if (line.starts_with("Connection")) {
+      if (line.starts_with("Connection: ")) {
         ans.keep_alive = line.ends_with("keep-alive");
+      } else if (line.starts_with("Content-length: ")) {
+        auto subsv = line.substr(line.find_last_of(' ') + 1);
+        auto ec = std::from_chars(subsv.begin(), subsv.end(), cont_length).ec;
+        if (ec == std::errc::invalid_argument) [[unlikely]] {
+          throw std::invalid_argument("Content-length value is not a number");
+        } else if (ec == std::errc::result_out_of_range) [[unlikely]] {
+          throw std::invalid_argument("Content-length value dosn't fit in size_t");
+        }
       }
     }
+    ans.body = co_await ReadBody(cont_length);
     co_return ans;
   }
 
   Task<std::string_view> GetLine() {
-    size_t r_pos = cur_have.find_first_of('\r');
-    if (r_pos == cur_have.npos) {
+    size_t r_pos;
+    size_t cnt = 0;
+    while ((r_pos = cur_have.find_first_of('\r')) == cur_have.npos) {
       co_await ReadMore();
-      r_pos = cur_have.find_first_of('\r');
-      if (r_pos == cur_have.npos) [[unlikely]] {
-        throw std::invalid_argument("http request header is longer then buffer");
+      ++cnt;
+      if (cnt > 100) {
+        throw std::runtime_error("connection failed");
       }
     }
     std::string_view ans = cur_have.substr(0, r_pos);
@@ -143,11 +156,12 @@ Task<> SendResponse(int fd, std::span<char> storage, HttpResponse resp) {
 
   auto it = storage.begin();
   it = rng::copy("HTTP/1.1 200 OK\r\n"sv, it).out;
-  it = rng::copy("Content-Length: ", it).out;
-  it = rng::copy(ToString(resp.body.size()), it).out;
+  it = rng::copy("Content-Length: "sv, it).out;
+  auto buf = ToString(resp.body.size());
+  it = rng::copy(buf, it).out;
   it = rng::copy("\r\n"sv, it).out;
-  it = rng::copy("Date: ", it).out;
-  it = fmt::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n", chr::floor<chr::seconds>(chr::system_clock::now()));
+  it = rng::copy("Date: "sv, it).out;
+  it = fmt::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n"sv, chr::floor<chr::seconds>(chr::system_clock::now()));
   for (auto &[key, val] : resp.headers) {
     it = rng::copy(key, it).out;
     it = rng::copy(": "sv, it).out;
