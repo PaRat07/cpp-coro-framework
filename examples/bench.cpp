@@ -112,7 +112,7 @@ int main() {
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
         throw std::system_error(errno, std::system_category(), "setsockopt SO_REUSEPORT");
     }
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    // setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
     // struct sock_filter code[] = {{BPF_LD | BPF_W | BPF_ABS, 0, 0, (__u32)SKF_AD_OFF + SKF_AD_CPU}, {BPF_RET | BPF_A, 0, 0, 0}};
     // struct sock_fprog prog = { .len = sizeof(code)/sizeof(code[0]), .filter = code };

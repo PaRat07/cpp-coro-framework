@@ -21,8 +21,8 @@ using namespace std::chrono_literals;
 
 struct UringHolder {
   UringHolder() {
-    if (io_uring_queue_init(4000, &ring, 0) < 0) {
-      throw std::runtime_error("io_uring_queue_init failed");
+    if (io_uring_queue_init(4000, &ring, IORING_FEAT_FAST_POLL) < 0) {
+      throw std::system_error(errno, std::generic_category(), "io_uring_queue_init failed");
     }
   }
 
@@ -51,7 +51,10 @@ public:
       ++cur_proc;
     }
     io_uring_cq_advance(&holder->ring, cur_proc);
-    io_uring_submit(&holder->ring);
+    if (not_submitted_cnt_ > 0) [[likely]] {
+      io_uring_submit(&holder->ring);
+      not_submitted_cnt_ = 0;
+    }
   }
 
   static bool IsEmpty() { return holder->cur_in == 0; }
@@ -67,6 +70,7 @@ public:
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_read(sqe, fd, data.data(), data.size(), off);
       ++holder->cur_in;
+      ++not_submitted_cnt_;
     }
 
     int await_resume() const noexcept { return res.cnt; }
@@ -86,6 +90,7 @@ public:
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
       ++holder->cur_in;
+      ++not_submitted_cnt_;
     }
 
     int await_resume() const noexcept { return res.cnt; }
@@ -105,6 +110,7 @@ public:
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
       ++holder->cur_in;
+      ++not_submitted_cnt_;
     }
 
     int await_resume() const noexcept { return res.cnt; }
@@ -124,6 +130,7 @@ public:
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
       ++holder->cur_in;
+      ++not_submitted_cnt_;
     }
 
     int await_resume() const noexcept { return res.cnt; }
@@ -148,6 +155,7 @@ public:
       io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr *>(&client_addr),
                            &client_len, SOCK_NONBLOCK);
       ++holder->cur_in;
+      ++not_submitted_cnt_;
     }
 
     int await_resume() const noexcept { return res.cnt; }
@@ -167,6 +175,7 @@ public:
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_poll_add(sqe, fd, POLLIN);
       ++holder->cur_in;
+      ++not_submitted_cnt_;
     }
 
     int await_resume() const noexcept { return res.cnt; }
@@ -176,6 +185,7 @@ public:
   };
 
 private:
+  static inline size_t not_submitted_cnt_ = 0;
   static inline std::optional<UringHolder> holder;
 };
 
