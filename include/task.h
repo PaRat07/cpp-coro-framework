@@ -109,6 +109,10 @@ public:
         }
     }
 
+    void Release() {
+        handle_ = {};
+    }
+
     Task(Task&& other) : handle_(std::exchange(other.handle_, {})) {}
 
     Task(const Task& other) = delete;
