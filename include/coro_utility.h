@@ -79,3 +79,31 @@ Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) 
     }
     co_return;
 }
+
+struct SpawnTask {
+    struct promise_type {
+        SpawnTask get_return_object() noexcept {
+            return SpawnTask { std::coroutine_handle<promise_type>::from_promise(*this) };
+        }
+
+        void return_void() noexcept {}
+
+        std::suspend_always initial_suspend() noexcept { return {}; }
+
+        std::suspend_never final_suspend() noexcept {
+            return {};
+        }
+
+        void unhandled_exception() {
+
+        }
+    };
+    std::coroutine_handle<> handle;
+};
+
+void spawn(Task<> task) {
+    [] (Task<> task) -> SpawnTask {
+        co_await task;
+        co_return;
+    } (std::move(task)).handle.resume();
+}
