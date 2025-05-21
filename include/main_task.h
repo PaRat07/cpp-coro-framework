@@ -5,7 +5,9 @@
 #include <coroutine>
 #include <print>
 #include <iostream>
+#include "signal.h"
 
+static bool IsEnd = false;
 alignas(max_align_t) inline std::array<std::byte, 10'000> main_task_aloc_buf;
 static bool used_main_task_buf = false;
 // task for co_main
@@ -47,10 +49,11 @@ public:
 
 
     template<typename... EvLoops>
-    [[noreturn]] void RunLoop() {
+    void RunLoop() {
         (EvLoops::Init(), ...);
+        signal(SIGTERM, +[] (int) { IsEnd = true; });
         handle_.resume();
-        while (true) {
+        while (!handle_.done()) {
             ((EvLoops::Resume()), ...);
         }
     }

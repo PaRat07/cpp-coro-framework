@@ -91,7 +91,7 @@ public:
     while ((r_pos = cur_have.find_first_of('\r')) == cur_have.npos) {
       co_await ReadMore();
       ++cnt;
-      if (cnt > 100) {
+      if (cnt > 5) {
         throw std::runtime_error("connection failed");
       }
     }
