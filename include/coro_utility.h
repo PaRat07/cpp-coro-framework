@@ -82,8 +82,6 @@ Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) 
 
 
 
-
-
 struct spawn_task_promise;
 
 class spawn_task {

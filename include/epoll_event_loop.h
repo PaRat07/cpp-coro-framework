@@ -1,8 +1,7 @@
 #pragma once
 
 #include <sys/epoll.h>
-
-#pragma once
+#include "sys_utility.h"
 
 #include <chrono>
 #include <coroutine>
@@ -23,216 +22,89 @@ namespace epoll {
 namespace chr = std::chrono;
 using namespace std::chrono_literals;
 
-struct UringHolder {
-  UringHolder() {
-    if (io_uring_queue_init(5000, &ring, 0) < 0) {
-      throw std::runtime_error("io_uring_queue_init failed");
-    }
+struct EpollHolder {
+  void Init() {
+    epoll_fd = Unwrap(epoll_create1(0));
   }
 
-  ~UringHolder() {
-    io_uring_queue_exit(&ring);
+  ~EpollHolder() {
+    close(epoll_fd);
   }
   int epoll_fd;
-  size_t cur_in = 0;
 };
 
 class EpollEventLoop {
  public:
-  struct Read
-
-  static void Resume() {
-      io_uring_cqe *cqe;
-      unsigned head;
-      size_t cur_proc = 0;
-      io_uring_for_each_cqe(&holder->ring, head, cqe) {
-        ResHolder &res_ref = *std::bit_cast<ResHolder*>(cqe->user_data);
-        res_ref.cnt = cqe->res;
-        res_ref.handle.resume();
-        ++cur_proc;
-      }
-      io_uring_cq_advance(&holder->ring, cur_proc);
-      io_uring_submit(&holder->ring);
-  }
-
-  static bool IsEmpty() {
-    return holder->cur_in == 0;
+  static void Resume() noexcept {
+    int nready = Unwrap(epoll_wait(holder_.epoll_fd, events_.data(), events_.size(), /*timeout_ms=*/-1));
+    for (auto &&i : events_ | std::views::take(nready)) {
+      std::coroutine_handle<>::from_address(i.data.ptr).resume();
+    }
+    if (nready == events_.size()) {
+      events_.resize(events_.size() * 2);
+    }
   }
 
   static void Init() {
-    holder.emplace();
+    holder_.Init();
+    events_.resize(32);
   }
 
 
   struct ReadAwaitable {
     bool await_ready() const noexcept { return false; }
 
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
+    void await_suspend(std::coroutine_handle<> handle) {
       epoll_event ev{};
-      ev.events = EPOLLIN;
-      res.handle = handle;
-      ev.data.ptr = &res;
-      if (epoll_ctl(holder->epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1)
-        throw std::runtime_error("epoll_ctl ADD listen_fd failed");
-      ++holder->cur_in;
+      ev.events = EPOLLIN | EPOLLONESHOT;
+      ev.data.ptr = handle.address();
+      Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
     }
 
-    int await_resume() const noexcept {
-      return res.cnt;
-    }
+    void await_resume() const noexcept {}
 
     int fd;
-    std::span<char> data;
-    off_t off;
-    ResHolder res;
-  };
-
-
-  struct RecieveAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      // sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
-      ++holder->cur_in;
-    }
-
-    int await_resume() const noexcept {
-      return res.cnt;
-    }
-
-    int fd;
-    std::span<char> data;
-    int flags;
-    ResHolder res;
+    bool armed;
   };
 
   struct WriteAwaitable {
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      ++holder->cur_in;
+      epoll_event ev{};
+      ev.events = EPOLLOUT | EPOLLONESHOT;
+      ev.data.ptr = handle.address();
+      Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
     }
 
-    int await_resume() const noexcept {
-      return res.cnt;
-    }
+    void await_resume() const noexcept {}
 
     int fd;
-    std::span<const char> data;
-    off_t off;
-    ResHolder res;
-  };
-
-  struct SendAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      sqe->ioprio = IORING_RECVSEND_POLL_FIRST;
-      ++holder->cur_in;
-    }
-
-    int await_resume() const noexcept {
-      return res.cnt;
-    }
-
-    int fd;
-    std::span<const char> data;
-    int flags;
-    ResHolder res;
-  };
-
-  struct AcceptIPV4Awaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) {
-      res.handle = handle;
-      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      if (sqe == nullptr) {
-        throw std::system_error(errno, std::system_category(), "io_uring_get_sqe failed");
-      }
-      io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len, SOCK_NONBLOCK);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      ++holder->cur_in;
-    }
-
-    int await_resume() const noexcept {
-      return res.cnt;
-    }
-
-    int fd;
-    sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    ResHolder res;
+    bool armed;
   };
 
   struct PollAwaitable {
     bool await_ready() const noexcept { return false; }
 
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe* sqe = io_uring_get_sqe(&holder->ring);
-      io_uring_prep_poll_add(sqe, fd, POLLIN);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      ++holder->cur_in;
+    void await_suspend(std::coroutine_handle<> handle) {
+      epoll_event ev{};
+      ev.events = EPOLLIN | EPOLLOUT | EPOLLONESHOT;
+      ev.data.ptr = handle.address();
+      Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
     }
 
-    int await_resume() const noexcept {
-      return res.cnt;
-    }
+    void await_resume() const noexcept {}
 
     int fd;
-    ResHolder res;
+    bool armed;
   };
+  friend struct File;
 
  private:
-  static inline size_t cur_queued_until_submit_ = 0;
-  static inline std::optional<UringHolder> holder;
+  static inline std::vector<epoll_event> events_;
+  static inline EpollHolder holder_;
 };
-
-inline auto Read(int fd, std::span<char> data, off_t off) -> Task<size_t> {
-  co_return co_await IOUringEventLoop::ReadAwaitable {
-    .fd = fd,
-    .data = data,
-    .off = off
-  };
-}
-
-inline auto Recieve(int fd, std::span<char> data, int flags = 0) -> Task<size_t> {
-  co_return co_await EpollEventLoop::RecieveAwaitable {
-    .fd = fd,
-    .data = data,
-    .flags = flags
-  };
-}
-
-inline auto Write(int fd, std::span<const char> data, off_t off) -> Task<size_t> {
-  co_return co_await EpollEventLoop::WriteAwaitable {
-    .fd = fd,
-    .data = data,
-    .off = off
-  };
-}
-
-inline auto Send(int fd, std::span<const char> data, int flags) -> Task<size_t> {
-  co_return co_await EpollEventLoop::SendAwaitable {
-    .fd = fd,
-    .data = data,
-    .flags = flags
-  };
-}
-
+  
 consteval in_addr operator""_addr(const char *data, size_t sz) {
   std::string_view sv = { data, sz };
   uint32_t ans = 0;
@@ -248,17 +120,89 @@ consteval in_addr operator""_addr(const char *data, size_t sz) {
   return { ans };
 }
 
-inline auto AcceptIPV4(int fd) -> Task<int> {
-  co_return co_await EpollEventLoop::AcceptIPV4Awaitable {
-    .fd = fd
-  };
-}
+struct File {
+  auto Read(std::span<char> data, off_t off) -> Task<size_t> {
+    bool buf = armed;
+    armed = true;
+    co_await EpollEventLoop::ReadAwaitable {
+      .fd = fd,
+      .armed = buf
+    };
+    lseek(fd, off, SEEK_SET);
+    co_return Unwrap(read(fd, data.data(), data.size()));
+  }
+
+  auto Accept() -> Task<File> {
+    bool buf = armed;
+    armed = true;
+    co_await EpollEventLoop::PollAwaitable {
+      .fd = fd,
+      .armed = buf
+    };
+    sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    co_return File(accept4(fd, reinterpret_cast<sockaddr *>(&client_addr), &client_len, SOCK_NONBLOCK));
+  }
 
 
-inline auto Poll(int fd) -> Task<int> {
-  co_return co_await EpollEventLoop::PollAwaitable {
-    .fd = fd
-  };
-}
 
+  auto Send(std::span<const char> data, int flags) -> Task<size_t> {
+    bool buf = armed;
+    armed = true;
+    co_await EpollEventLoop::WriteAwaitable {
+      .fd = fd,
+      .armed = buf
+    };
+    co_return Unwrap(send(fd, data.data(), data.size(), flags));
+  }
+
+  auto Write(std::span<const char> data, off_t off) -> Task<size_t> {
+    bool buf = armed;
+    armed = true;
+    co_await EpollEventLoop::WriteAwaitable {
+      .fd = fd,
+      .armed = buf
+    };
+    lseek(fd, off, SEEK_SET);
+    co_return Unwrap(write(fd, data.data(), data.size()));
+  }
+
+
+  auto Recieve(std::span<char> data, int flags = 0) -> Task<size_t> {
+    bool buf = armed;
+    armed = true;
+    co_await EpollEventLoop::ReadAwaitable {
+      .fd = fd,
+      .armed = buf
+    };
+    co_return Unwrap(recv(fd, data.data(), data.size(), flags));
+  }
+  File(const File &rhs) = delete;
+  File(File &&rhs)
+    : fd(std::exchange(rhs.fd, -1)),
+      armed(std::exchange(rhs.armed, false)) {
+  }
+  File(int fd) : fd(fd) {
+  }
+
+  File &operator=(const File&) = delete;
+
+  File &operator=(File &&rhs) {
+    fd = std::exchange(rhs.fd, -1);
+    armed = std::exchange(rhs.armed, false);
+  }
+  File() = default;
+
+  ~File() {
+    if (fd != -1) {
+      if (armed) {
+        Unwrap(epoll_ctl(EpollEventLoop::holder_.epoll_fd, EPOLL_CTL_DEL, fd, nullptr));
+      }
+      close(fd);
+    }
+  }
+
+  int fd = -1;
+  bool armed = false;
+};
 } // namespace epoll
