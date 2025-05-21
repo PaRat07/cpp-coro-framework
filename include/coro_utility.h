@@ -80,30 +80,36 @@ Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) 
     co_return;
 }
 
-struct SpawnTask {
-    struct promise_type {
-        SpawnTask get_return_object() noexcept {
-            return SpawnTask { std::coroutine_handle<promise_type>::from_promise(*this) };
-        }
 
-        void return_void() noexcept {}
 
-        std::suspend_always initial_suspend() noexcept { return {}; }
+struct spawn_task_promise;
 
-        std::suspend_never final_suspend() noexcept {
-            return {};
-        }
+class spawn_task {
+public:
+    using promise_type = spawn_task_promise;
+    std::coroutine_handle<promise_type> coro_;
+};
+struct spawn_task_promise {
+    std::coroutine_handle<spawn_task_promise> self;
+    // Called by the compiler to get the coroutine's return object:
+    auto get_return_object() noexcept {
+        return spawn_task{ std::coroutine_handle<spawn_task_promise>::from_promise(*this) };
+    }
 
-        void unhandled_exception() {
+    // Don’t run immediately—suspend until explicit resume:
+    std::suspend_never initial_suspend() noexcept { return {}; }
 
-        }
-    };
-    std::coroutine_handle<> handle;
+    // At final suspend, destroy the coroutine frame:
+    std::suspend_never final_suspend() noexcept { return {}; }
+
+    // Standard promise functions:
+    void return_void() noexcept {}
+    void unhandled_exception() noexcept { std::terminate(); }
 };
 
-void spawn(Task<> task) {
-    [] (Task<> task) -> SpawnTask {
-        co_await task;
-        co_return;
-    } (std::move(task)).handle.resume();
+template <typename Awaitable>
+auto spawn(Awaitable awaitable) -> void {
+    [] (Awaitable awaitable) -> spawn_task {
+        co_await awaitable;
+    } (std::move(awaitable));
 }

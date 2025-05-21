@@ -20,7 +20,6 @@ using namespace epoll;
 using namespace std::chrono_literals;
 using namespace std::string_literals;
 using namespace std::string_view_literals;
-
 struct InvokeOnConstruct {
     InvokeOnConstruct(auto&& f) { f(); }
 };
@@ -33,11 +32,10 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
     // ONCE {
     //     db_conn.prepare("get_by_id", R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
     // };
-    std::cout << "Started" << std::endl;
+    // std::cout << "Started" << std::endl;
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
-    parser.Reconnect(connfd);
     try {
         while (reuse_connection) {
             HttpRequest req = co_await parser.ParseRequest();
@@ -81,6 +79,10 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
                 throw std::runtime_error("incorrect prefix");
             }
         }
+        close(connfd);
+    } catch (...) {
+        close(connfd);
+        std::cerr << "Failed: " << std::endl;
     }
     catch (...) {
         std::cerr << "Failed" << std::endl;
@@ -158,8 +160,11 @@ int main() {
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
         throw std::system_error(errno, std::system_category(), "setsockopt SO_REUSEPORT");
     }
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    // setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+    // struct sock_filter code[] = {{BPF_LD | BPF_W | BPF_ABS, 0, 0, (__u32)SKF_AD_OFF + SKF_AD_CPU}, {BPF_RET | BPF_A, 0, 0, 0}};
+    // struct sock_fprog prog = { .len = sizeof(code)/sizeof(code[0]), .filter = code };
+    // setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &prog, sizeof(prog));
 
 
     sockaddr_in addr;
