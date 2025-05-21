@@ -47,14 +47,11 @@ public:
 
 
     template<typename... EvLoops>
-    void RunLoop() {
+    [[noreturn]] void RunLoop() {
         (EvLoops::Init(), ...);
         handle_.resume();
-        while ((!EvLoops::IsEmpty() || ...)) {
+        while (true) {
             ((EvLoops::Resume()), ...);
-        }
-        if (handle_.promise().exc_ptr) {
-            std::rethrow_exception(handle_.promise().exc_ptr);
         }
     }
 

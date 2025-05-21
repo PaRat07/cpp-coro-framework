@@ -1,3 +1,9 @@
+<<<<<<< Updated upstream
+=======
+#include "epoll_event_loop.h"
+using namespace epoll;
+
+>>>>>>> Stashed changes
 #include <http.h>
 #include <chrono>
 #include "io_uring_event_loop.h"
@@ -29,7 +35,11 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
+<<<<<<< Updated upstream
 auto Loop(int fd/*, pqxx::connection &db_conn*/) -> Task<> {
+=======
+auto ProcConn(File connfd/*, pqxx::connection &db_conn*/) -> Task<> {
+>>>>>>> Stashed changes
     // ONCE {
     //     db_conn.prepare("get_by_id", R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
     // };
@@ -94,16 +104,27 @@ auto Loop(int fd/*, pqxx::connection &db_conn*/) -> Task<> {
             close(connfd);
             std::cerr << "Failed: " << std::quoted(exc.what()) << std::endl;
         }
+<<<<<<< Updated upstream
+=======
+    } catch (...) {
+        std::cerr << "Failed: " << std::endl;
+>>>>>>> Stashed changes
     }
 }
 
 
+<<<<<<< Updated upstream
 MainTask co_server(int fd) {
     std::array<Task<>, 3'000 * 0 + 10> tasks;
     // std::string db_options = fmt::format("host=localhost port=5432 dbname=hello_world connect_timeout=10 password={} user={}", std::getenv("PGPASS"), std::getenv("PGUSER"));
     // pqxx::connection db_conn;//(db_options.data());
     for (int i = 0; i < tasks.size(); ++i) {
         tasks[i] = Loop(fd/*, db_conn*/);
+=======
+MainTask co_server(File fd) {
+    while (true) {
+      spawn(ProcConn(co_await fd.Accept()));
+>>>>>>> Stashed changes
     }
     co_await WhenAll(tasks);
     co_return;
@@ -132,12 +153,33 @@ int main() {
         throw std::system_error(errno, std::system_category(), "bind error");
     }
 
+<<<<<<< Updated upstream
     if (listen(fd, SOCK_STREAM) < 0) {
         close(fd);
         throw std::system_error(errno, std::system_category(), "listen error");
     }
     fork();fork();fork();fork();
     co_server(fd).RunLoop<IOUringEventLoop>();
+=======
+    if (listen(fd, std::numeric_limits<int>::max()) < 0) {
+        close(fd);
+        throw std::system_error(errno, std::system_category(), "listen error");
+    }
+    // fork();fork();fork();fork();
+
+  // while (true) {
+  //   int connfd;
+  //   [&connfd, fd] mutable -> MainTask {
+  //     connfd = co_await AcceptIPV4(fd);
+  //   } ().RunLoop<IOUringEventLoop>();
+  //
+  //   [connfd] -> MainTask {
+  //     co_await ProcConn(connfd);
+  //   } ().RunLoop<IOUringEventLoop>();
+  // }
+
+    co_server(fd).RunLoop<EpollEventLoop>();
+>>>>>>> Stashed changes
 }
 
 

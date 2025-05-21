@@ -46,7 +46,7 @@ struct HttpRequest {
 template<size_t kSz>
 class HttpParser {
 public:
-  HttpParser(int fd) : fd_(fd) {}
+  HttpParser(File &fd) : fd_(&fd) {}
 
   Task<HttpRequest> ParseRequest() {
     HttpRequest ans;
@@ -116,16 +116,16 @@ public:
 
   Task<> ReadMore() {
     std::ranges::copy(cur_have, buf_.begin());
-    cur_have = { buf_.data(), cur_have.size() + co_await Recieve(fd_, std::span(buf_).subspan(cur_have.size())) };
+    cur_have = { buf_.data(), cur_have.size() + co_await fd_->Recieve(std::span(buf_).subspan(cur_have.size())) };
   }
 
-  void Reconnect(int new_fd) {
-    fd_ = new_fd;
+  void Reconnect(File &new_fd) {
+    fd_ = &new_fd;
     cur_have = {};
   }
 
 private:
-  int fd_;
+  File *fd_;
   std::array<char, kSz> buf_;
   std::string_view cur_have;
 };
@@ -149,7 +149,7 @@ int DigCnt(int num) {
   return ans;
 }
 
-Task<> SendResponse(int fd, std::span<char> storage, HttpResponse resp) {
+Task<> SendResponse(File &fd, std::span<char> storage, HttpResponse resp) {
   using namespace std::string_view_literals;
   namespace rng = std::ranges;
   namespace chr = std::chrono;
@@ -170,6 +170,6 @@ Task<> SendResponse(int fd, std::span<char> storage, HttpResponse resp) {
   }
   it = rng::copy("\r\n"sv, it).out;
   it = rng::copy(resp.body, it).out;
-  co_await Send(fd, storage.subspan(0, it - storage.begin()), 0);
+  co_await fd.Send(storage.subspan(0, it - storage.begin()), 0);
   co_return;
 }
