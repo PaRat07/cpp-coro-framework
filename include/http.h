@@ -130,10 +130,6 @@ private:
   std::string_view cur_have;
 };
 
-struct HttpResponse {
-  std::vector<std::pair<std::string_view, std::string>> headers;
-  std::string body;
-};
 
 std::string ToString(int num) {
   std::array<char, 10> ans;
@@ -149,7 +145,7 @@ int DigCnt(int num) {
   return ans;
 }
 
-Task<> SendResponse(File &fd, std::span<char> storage, HttpResponse resp) {
+Task<> SendResponse(File &fd, std::span<char> storage, std::span<const std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
   using namespace std::string_view_literals;
   namespace rng = std::ranges;
   namespace chr = std::chrono;
@@ -157,19 +153,19 @@ Task<> SendResponse(File &fd, std::span<char> storage, HttpResponse resp) {
   auto it = storage.begin();
   it = rng::copy("HTTP/1.1 200 OK\r\n"sv, it).out;
   it = rng::copy("Content-Length: "sv, it).out;
-  auto buf = ToString(resp.body.size());
+  auto buf = ToString(body.size());
   it = rng::copy(buf, it).out;
   it = rng::copy("\r\n"sv, it).out;
   it = rng::copy("Date: "sv, it).out;
   it = fmt::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n"sv, chr::floor<chr::seconds>(chr::system_clock::now()));
-  for (auto &[key, val] : resp.headers) {
+  for (auto [key, val] : headers) {
     it = rng::copy(key, it).out;
     it = rng::copy(": "sv, it).out;
     it = rng::copy(val, it).out;
     it = rng::copy("\r\n"sv, it).out;
   }
   it = rng::copy("\r\n"sv, it).out;
-  it = rng::copy(resp.body, it).out;
+  it = rng::copy(body, it).out;
   co_await fd.Send(storage.subspan(0, it - storage.begin()), 0);
   co_return;
 }

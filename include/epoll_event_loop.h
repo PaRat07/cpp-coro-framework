@@ -21,7 +21,6 @@
 namespace epoll {
 namespace chr = std::chrono;
 using namespace std::chrono_literals;
-
 struct EpollHolder {
   void Init() {
     epoll_fd = Unwrap(epoll_create1(0));
@@ -37,10 +36,10 @@ class EpollEventLoop {
  public:
   static void Resume() noexcept {
     int nready = Unwrap(epoll_wait(holder_.epoll_fd, events_.data(), events_.size(), /*timeout_ms=*/-1));
-    for (auto &&i : events_ | std::views::take(nready)) {
+    for (auto i : events_ | std::views::take(nready)) {
       std::coroutine_handle<>::from_address(i.data.ptr).resume();
     }
-    if (nready == events_.size()) {
+    if (nready == events_.size()) [[unlikely]] {
       events_.resize(events_.size() * 2);
     }
   }
@@ -56,7 +55,7 @@ class EpollEventLoop {
 
     void await_suspend(std::coroutine_handle<> handle) {
       epoll_event ev{};
-      ev.events = EPOLLIN | EPOLLONESHOT;
+      ev.events = EPOLLIN;
       ev.data.ptr = handle.address();
       Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
     }
@@ -72,7 +71,7 @@ class EpollEventLoop {
 
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       epoll_event ev{};
-      ev.events = EPOLLOUT | EPOLLONESHOT;
+      ev.events = EPOLLOUT;
       ev.data.ptr = handle.address();
       Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
     }
@@ -88,7 +87,7 @@ class EpollEventLoop {
 
     void await_suspend(std::coroutine_handle<> handle) {
       epoll_event ev{};
-      ev.events = EPOLLIN | EPOLLOUT | EPOLLONESHOT;
+      ev.events = EPOLLIN;
       ev.data.ptr = handle.address();
       Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
     }

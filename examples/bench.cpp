@@ -42,10 +42,12 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
             reuse_connection = req.keep_alive;
             if (req.request_target == "/plaintext") {
                 co_await SendResponse(connfd, resp_buf,
-                                      {{{"Content-Type", "text/plain; charset=UTF-8"},
-                                        {"Server", "Example"},
-                                        {"Connection", "keep-alive"}},
-                                       "Hello, world!"});
+                                      std::array{
+                                        std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
+                                        std::pair{"Server"sv, "Example"sv},
+                                        std::pair{"Connection"sv, "keep-alive"sv}
+                                      },
+                                       "Hello, world!");
             }
             else if (req.request_target == "/json") {
                 struct JsonResp {
@@ -53,10 +55,12 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
                 };
                 std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
                 co_await SendResponse(connfd, resp_buf,
-                                      {{{"Content-Type", "application/json; charset=UTF-8"},
-                                        {"Server", "Example"},
-                                        {"Connection", "keep-alive"}},
-                                       std::move(body)});
+                                      std::array{
+                                        std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                        std::pair{"Server"sv, "Example"sv},
+                                        std::pair{"Connection"sv, "keep-alive"sv}
+                                      },
+                                       body);
             }
             else if (req.request_target == "/db") {
                 int random_id = rand() % 10'000;
@@ -68,24 +72,21 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
                 // for (auto [resp_id, resp_num] : tx.query<int, int>(pqxx::prepped("get_by_id"), random_id)) {
                 //     resp = { resp_id, resp_num };
                 // }
-                std::string body = rfl::json::write(resp);
-                co_await SendResponse(connfd, resp_buf,
-                                      {{{"Content-Type", "application/json; charset=UTF-8"},
-                                        {"Server", "Example"},
-                                        {"Connection", "keep-alive"}},
-                                       std::move(body)});
+              std::string body = rfl::json::write(resp);
+              co_await SendResponse(connfd, resp_buf,
+                                    std::array{
+                                      std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                      std::pair{"Server"sv, "Example"sv},
+                                      std::pair{"Connection"sv, "keep-alive"sv}
+                                    },
+                                     body);
             }
             else {
                 throw std::runtime_error("incorrect prefix");
             }
         }
-        close(connfd);
     } catch (...) {
-        close(connfd);
-        std::cerr << "Failed: " << std::endl;
-    }
-    catch (...) {
-        std::cerr << "Failed" << std::endl;
+        // std::cerr << "Failed: " << std::endl;
     }
     co_return;
 }
@@ -175,11 +176,11 @@ int main() {
         throw std::system_error(errno, std::system_category(), "bind error");
     }
 
-    if (listen(fd, std::numeric_limits<int>::max()) < 0) {
+    if (listen(fd, std::numeric_limits<int>::max() * 0 + 1) < 0) {
         close(fd);
         throw std::system_error(errno, std::system_category(), "listen error");
     }
-    fork_workers();
+    // fork_workers();
     // fork();fork();fork();fork();
 
     // while (true) {
@@ -194,7 +195,6 @@ int main() {
     // }
 
     co_server(fd).RunLoop<EpollEventLoop>();
-    close(fd);
 }
 
 
