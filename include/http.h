@@ -1,6 +1,7 @@
 #pragma once
 
 #include <fmt/chrono.h>
+#include <fmt/compile.h>
 #include "task.h"
 
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <charconv>
 #include <algorithm>
 
+using namespace fmt::literals;
 enum class ReqType {
   kGet,
   kPost,
@@ -36,7 +38,7 @@ ReqType ParseRequestType(std::string_view sv) {
 
 struct HttpRequest {
   ReqType req_type;
-  bool keep_alive = true;
+  bool keep_alive = false;
   std::string request_target;
   std::string http_version;
   std::string host;
@@ -145,6 +147,7 @@ int DigCnt(int num) {
   return ans;
 }
 
+
 Task<> SendResponse(File &fd, std::span<char> storage, std::span<const std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
   using namespace std::string_view_literals;
   namespace rng = std::ranges;
@@ -157,7 +160,7 @@ Task<> SendResponse(File &fd, std::span<char> storage, std::span<const std::pair
   it = rng::copy(buf, it).out;
   it = rng::copy("\r\n"sv, it).out;
   it = rng::copy("Date: "sv, it).out;
-  it = fmt::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n"sv, chr::floor<chr::seconds>(chr::system_clock::now()));
+  it = fmt::format_to(it, "{:%a, %d %b %Y %H:%M:%S GMT}\r\n"_cf, chr::floor<chr::seconds>(chr::system_clock::now()));
   for (auto [key, val] : headers) {
     it = rng::copy(key, it).out;
     it = rng::copy(": "sv, it).out;
