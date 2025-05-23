@@ -86,16 +86,24 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
             }
         }
     } catch (...) {
-      fmt::println("failed");
+      // fmt::println("failed");
         // std::cerr << "Failed: " << std::endl;
     }
     co_return;
 }
 
 MainTask co_server(File fd) {
-    while (true) {
-        spawn(ProcConn(co_await fd.Accept()));
+    std::array<Task<>, 2000> tasks;
+    for (auto &i : tasks) {
+      i = [] (File &fd) -> Task<> {
+          while (true) {
+            co_await ProcConn(co_await fd.Accept());
+          }
+          co_return;
+      } (fd);
     }
+    co_await WhenAll(tasks);
+
     co_return;
 }
 
