@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 
+#include "sys_utility.h"
 #include "task.h"
 #include "coro_utility.h"
 namespace uring {
@@ -20,10 +21,8 @@ namespace chr = std::chrono;
 using namespace std::chrono_literals;
 
 struct UringHolder {
-  UringHolder() {
-    if (io_uring_queue_init(4000, &ring, IORING_FEAT_FAST_POLL) < 0) {
-      throw std::system_error(errno, std::generic_category(), "io_uring_queue_init failed");
-    }
+  void Init() {
+    Unwrap(io_uring_queue_init(4000, &ring, 0));
   }
 
   ~UringHolder() { io_uring_queue_exit(&ring); }
@@ -43,138 +42,35 @@ public:
     io_uring_cqe *cqe;
     unsigned head;
     size_t cur_proc = 0;
-    io_uring_for_each_cqe(&holder->ring, head, cqe) {
+    io_uring_for_each_cqe(&holder.ring, head, cqe) {
       ResHolder &res_ref = *std::bit_cast<ResHolder*>(cqe->user_data);
-      res_ref.cnt = cqe->res;
-      --holder->cur_in;
+      res_ref.cnt = std::max(0, cqe->res);
+      --holder.cur_in;
       res_ref.handle.resume();
       ++cur_proc;
     }
-    io_uring_cq_advance(&holder->ring, cur_proc);
+    io_uring_cq_advance(&holder.ring, cur_proc);
     if (not_submitted_cnt_ > 0) [[likely]] {
-      io_uring_submit(&holder->ring);
+      Unwrap(io_uring_submit(&holder.ring));
       not_submitted_cnt_ = 0;
     }
   }
 
-  static bool IsEmpty() { return holder->cur_in == 0; }
+  static bool IsEmpty() { return holder.cur_in == 0; }
 
-  static void Init() { holder.emplace(); }
+  static void Init() { holder.Init(); }
 
-  struct ReadAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe *sqe = io_uring_get_sqe(&holder->ring);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_prep_read(sqe, fd, data.data(), data.size(), off);
-      ++holder->cur_in;
-      ++not_submitted_cnt_;
-    }
-
-    int await_resume() const noexcept { return res.cnt; }
-
-    int fd;
-    std::span<char> data;
-    off_t off;
-    ResHolder res;
-  };
-
-  struct RecieveAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe *sqe = io_uring_get_sqe(&holder->ring);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
-      ++holder->cur_in;
-      ++not_submitted_cnt_;
-    }
-
-    int await_resume() const noexcept { return res.cnt; }
-
-    int fd;
-    std::span<char> data;
-    int flags;
-    ResHolder res;
-  };
-
-  struct WriteAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe *sqe = io_uring_get_sqe(&holder->ring);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
-      ++holder->cur_in;
-      ++not_submitted_cnt_;
-    }
-
-    int await_resume() const noexcept { return res.cnt; }
-
-    int fd;
-    std::span<const char> data;
-    off_t off;
-    ResHolder res;
-  };
-
-  struct SendAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      res.handle = handle;
-      io_uring_sqe *sqe = io_uring_get_sqe(&holder->ring);
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
-      ++holder->cur_in;
-      ++not_submitted_cnt_;
-    }
-
-    int await_resume() const noexcept { return res.cnt; }
-
-    int fd;
-    std::span<const char> data;
-    int flags;
-    ResHolder res;
-  };
-
-  struct AcceptIPV4Awaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) {
-      res.handle = handle;
-      io_uring_sqe *sqe = io_uring_get_sqe(&holder->ring);
-      if (sqe == nullptr) {
-        throw std::system_error(errno, std::system_category(),
-                                "io_uring_get_sqe failed");
-      }
-      sqe->user_data = std::bit_cast<__u64>(&res);
-      io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr *>(&client_addr),
-                           &client_len, SOCK_NONBLOCK);
-      ++holder->cur_in;
-      ++not_submitted_cnt_;
-    }
-
-    int await_resume() const noexcept { return res.cnt; }
-
-    int fd;
-    sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    ResHolder res;
-  };
+  friend struct File;
 
   struct PollAwaitable {
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       res.handle = handle;
-      io_uring_sqe *sqe = io_uring_get_sqe(&holder->ring);
+      io_uring_sqe *sqe = io_uring_get_sqe(&holder.ring);
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_poll_add(sqe, fd, POLLIN);
-      ++holder->cur_in;
+      ++holder.cur_in;
       ++not_submitted_cnt_;
     }
 
@@ -186,31 +82,8 @@ public:
 
 private:
   static inline size_t not_submitted_cnt_ = 0;
-  static inline std::optional<UringHolder> holder;
+  static inline UringHolder holder;
 };
-
-inline auto Read(int fd, std::span<char> data, off_t off) -> Task<size_t> {
-  co_return co_await IOUringEventLoop::ReadAwaitable{
-      .fd = fd, .data = data, .off = off};
-}
-
-inline auto Recieve(int fd, std::span<char> data, int flags = 0)
-    -> Task<size_t> {
-  co_return co_await IOUringEventLoop::RecieveAwaitable{
-      .fd = fd, .data = data, .flags = flags};
-}
-
-inline auto Write(int fd, std::span<const char> data, off_t off)
-    -> Task<size_t> {
-  co_return co_await IOUringEventLoop::WriteAwaitable{
-      .fd = fd, .data = data, .off = off};
-}
-
-inline auto Send(int fd, std::span<const char> data, int flags)
-    -> Task<size_t> {
-  co_return co_await IOUringEventLoop::SendAwaitable{
-      .fd = fd, .data = data, .flags = flags};
-}
 
 consteval in_addr operator""_addr(const char *data, size_t sz) {
   std::string_view sv = {data, sz};
@@ -227,11 +100,179 @@ consteval in_addr operator""_addr(const char *data, size_t sz) {
   return {ans};
 }
 
-inline auto AcceptIPV4(int fd) -> Task<int> {
-  co_return co_await IOUringEventLoop::AcceptIPV4Awaitable{.fd = fd};
-}
+struct File {
+public:
+  auto Read(std::span<char> data, off_t off) -> Task<size_t> {
+    struct ReadAwaitable {
+      bool await_ready() const noexcept { return false; }
 
-inline auto Poll(int fd) -> Task<int> {
-  co_return co_await IOUringEventLoop::PollAwaitable{.fd = fd};
-}
+      void await_suspend(std::coroutine_handle<> handle) noexcept {
+        res.handle = handle;
+        io_uring_sqe *sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        if (sqe == nullptr) [[unlikely]] {
+          IOUringEventLoop::not_submitted_cnt_ = 0;
+          Unwrap(io_uring_submit(&IOUringEventLoop::holder.ring));
+          sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        }
+        sqe->user_data = std::bit_cast<__u64>(&res);
+        io_uring_prep_read(sqe, fd, data.data(), data.size(), off);
+        ++IOUringEventLoop::holder.cur_in;
+        ++IOUringEventLoop::not_submitted_cnt_;
+      }
+
+      int await_resume() const noexcept { return res.cnt; }
+
+      int fd;
+      std::span<char> data;
+      off_t off;
+      IOUringEventLoop::ResHolder res;
+    };
+
+    co_return co_await ReadAwaitable {
+      .fd = fd,
+      .data = data,
+      .off = off,
+    };
+  }
+
+  auto Accept() -> Task<File> {
+    struct AcceptIPV4Awaitable {
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> handle) {
+        res.handle = handle;
+        io_uring_sqe *sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        if (sqe == nullptr) [[unlikely]] {
+          IOUringEventLoop::not_submitted_cnt_ = 0;
+          Unwrap(io_uring_submit(&IOUringEventLoop::holder.ring));
+          sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        }
+        sqe->user_data = std::bit_cast<__u64>(&res);
+        io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr *>(&client_addr),
+                             &client_len, SOCK_NONBLOCK);
+        ++IOUringEventLoop::holder.cur_in;
+        ++IOUringEventLoop::not_submitted_cnt_;
+      }
+
+      int await_resume() const noexcept { return res.cnt; }
+
+      int fd;
+      sockaddr_in client_addr;
+      socklen_t client_len = sizeof(client_addr);
+      IOUringEventLoop::ResHolder res;
+    };
+    co_return co_await AcceptIPV4Awaitable {
+      .fd = fd
+    };
+  }
+
+
+
+  auto Send(std::span<const char> data, int flags) -> Task<size_t> {
+    struct SendAwaitable {
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> handle) noexcept {
+        res.handle = handle;
+        io_uring_sqe *sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        if (sqe == nullptr) [[unlikely]] {
+          IOUringEventLoop::not_submitted_cnt_ = 0;
+          Unwrap(io_uring_submit(&IOUringEventLoop::holder.ring));
+          sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        }
+        sqe->user_data = std::bit_cast<__u64>(&res);
+        io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
+        ++IOUringEventLoop::holder.cur_in;
+        ++IOUringEventLoop::not_submitted_cnt_;
+      }
+
+      int await_resume() const noexcept { return res.cnt; }
+
+      int fd;
+      std::span<const char> data;
+      int flags;
+      IOUringEventLoop::ResHolder res;
+    };
+    co_return co_await SendAwaitable{
+      .fd = fd,
+      .data = data,
+      .flags = flags
+    };
+  }
+
+  auto Write(std::span<const char> data, off_t off) -> Task<size_t> {
+    struct WriteAwaitable {
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> handle) noexcept {
+        res.handle = handle;
+        io_uring_sqe *sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        if (sqe == nullptr) [[unlikely]] {
+          IOUringEventLoop::not_submitted_cnt_ = 0;
+          Unwrap(io_uring_submit(&IOUringEventLoop::holder.ring));
+          sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        }
+        sqe->user_data = std::bit_cast<__u64>(&res);
+        io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
+        ++IOUringEventLoop::holder.cur_in;
+        ++IOUringEventLoop::not_submitted_cnt_;
+      }
+
+      int await_resume() const noexcept { return res.cnt; }
+
+      int fd;
+      std::span<const char> data;
+      off_t off;
+      IOUringEventLoop::ResHolder res;
+    };
+    co_return co_await WriteAwaitable {
+      .fd = fd,
+      .data = data,
+      .off = off
+    };
+  }
+
+
+  auto Recieve(std::span<char> data, int flags = 0) -> Task<size_t> {
+    struct RecieveAwaitable {
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> handle) noexcept {
+        res.handle = handle;
+        io_uring_sqe *sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        if (sqe == nullptr) [[unlikely]] {
+          IOUringEventLoop::not_submitted_cnt_ = 0;
+          Unwrap(io_uring_submit(&IOUringEventLoop::holder.ring));
+          sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        }
+        sqe->user_data = std::bit_cast<__u64>(&res);
+        io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
+        ++IOUringEventLoop::holder.cur_in;
+        ++IOUringEventLoop::not_submitted_cnt_;
+      }
+
+      int await_resume() const noexcept { return res.cnt; }
+
+      int fd;
+      std::span<char> data;
+      int flags;
+      IOUringEventLoop::ResHolder res;
+    };
+    co_return co_await RecieveAwaitable {
+      .fd = fd,
+      .data = data,
+      .flags = flags
+    };
+  }
+  File(int fd)
+    : fd(fd) {}
+
+  ~File() {
+    if (fd != -1) {
+      // close(fd);
+    }
+  }
+
+  int fd = -1;
+};
 } // namespace uring
