@@ -50,53 +50,6 @@ class EpollEventLoop {
   }
 
 
-  struct ReadAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) {
-      epoll_event ev{};
-      ev.events = EPOLLIN;
-      ev.data.ptr = handle.address();
-      Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
-    }
-
-    void await_resume() const noexcept {}
-
-    int fd;
-    bool armed;
-  };
-
-  struct WriteAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      epoll_event ev{};
-      ev.events = EPOLLOUT;
-      ev.data.ptr = handle.address();
-      Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
-    }
-
-    void await_resume() const noexcept {}
-
-    int fd;
-    bool armed;
-  };
-
-  struct PollAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) {
-      epoll_event ev{};
-      ev.events = EPOLLIN;
-      ev.data.ptr = handle.address();
-      Unwrap(epoll_ctl(holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
-    }
-
-    void await_resume() const noexcept {}
-
-    int fd;
-    bool armed;
-  };
   friend struct File;
 
  private:
@@ -120,12 +73,34 @@ consteval in_addr operator""_addr(const char *data, size_t sz) {
 }
 
 struct File {
+private:
+  struct EpollAwaitable {
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) {
+      epoll_event ev{};
+      ev.events = event;
+      ev.data.ptr = handle.address();
+      Unwrap(epoll_ctl(EpollEventLoop::holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
+    }
+
+    void await_resume() const noexcept {}
+
+    int fd;
+    bool armed;
+    EPOLL_EVENTS event;
+  };
+
+
+public:
   auto Read(std::span<char> data, off_t off) -> Task<size_t> {
     bool buf = armed;
     armed = true;
-    co_await EpollEventLoop::ReadAwaitable {
+
+    co_await EpollAwaitable {
       .fd = fd,
-      .armed = buf
+      .armed = buf,
+      .event = EPOLLIN
     };
     lseek(fd, off, SEEK_SET);
     co_return Unwrap(read(fd, data.data(), data.size()));
@@ -134,9 +109,11 @@ struct File {
   auto Accept() -> Task<File> {
     bool buf = armed;
     armed = true;
-    co_await EpollEventLoop::PollAwaitable {
+
+    co_await EpollAwaitable {
       .fd = fd,
-      .armed = buf
+      .armed = buf,
+      .event = EPOLLIN
     };
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
@@ -148,9 +125,10 @@ struct File {
   auto Send(std::span<const char> data, int flags) -> Task<size_t> {
     bool buf = armed;
     armed = true;
-    co_await EpollEventLoop::WriteAwaitable {
+    co_await EpollAwaitable {
       .fd = fd,
-      .armed = buf
+      .armed = buf,
+      .event = EPOLLOUT
     };
     co_return Unwrap(send(fd, data.data(), data.size(), flags));
   }
@@ -158,9 +136,10 @@ struct File {
   auto Write(std::span<const char> data, off_t off) -> Task<size_t> {
     bool buf = armed;
     armed = true;
-    co_await EpollEventLoop::WriteAwaitable {
+    co_await EpollAwaitable {
       .fd = fd,
-      .armed = buf
+      .armed = buf,
+      .event = EPOLLOUT
     };
     lseek(fd, off, SEEK_SET);
     co_return Unwrap(write(fd, data.data(), data.size()));
@@ -170,9 +149,10 @@ struct File {
   auto Recieve(std::span<char> data, int flags = 0) -> Task<size_t> {
     bool buf = armed;
     armed = true;
-    co_await EpollEventLoop::ReadAwaitable {
+    co_await EpollAwaitable {
       .fd = fd,
-      .armed = buf
+      .armed = buf,
+      .event = EPOLLIN
     };
     co_return Unwrap(recv(fd, data.data(), data.size(), flags));
   }

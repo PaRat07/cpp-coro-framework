@@ -86,7 +86,7 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
             }
         }
     } catch (...) {
-      fmt::print("failed");
+      fmt::println("failed");
         // std::cerr << "Failed: " << std::endl;
     }
     co_return;
