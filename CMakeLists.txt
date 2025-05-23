@@ -12,7 +12,7 @@ file(
 include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
 CPMAddPackage("gh:fmtlib/fmt#11.2.0")
-CPMAddPackage("gh:jtv/libpqxx#7.10.1")
+#CPMAddPackage("gh:jtv/libpqxx#7.10.1")
 CPMAddPackage("gh:getml/reflect-cpp#v0.19.0")
 
 #CPMAddPackage("gh:boostorg/winapi#boost-1.88.0")
@@ -33,7 +33,7 @@ add_library(coros src/noop.cpp)
 
 target_include_directories(coros PUBLIC include)
 
-target_link_libraries(coros PUBLIC fmt::fmt libpqxx::pqxx reflectcpp)
+target_link_libraries(coros PUBLIC fmt::fmt reflectcpp)
 target_link_options(coros PUBLIC -luring)
 
 add_subdirectory(examples)

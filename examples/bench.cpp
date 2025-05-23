@@ -6,7 +6,7 @@ using namespace uring;
 
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <pqxx/pqxx>
+// #include <pqxx/pqxx>
 #include <rfl.hpp>
 #include <rfl/json.hpp>
 #include <sys/socket.h>
