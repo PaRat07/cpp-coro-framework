@@ -264,6 +264,38 @@ public:
       .flags = flags
     };
   }
+
+  auto Poll(bool is_read) -> Task<> {
+    struct PollAwaitable {
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> handle) noexcept {
+        res.handle = handle;
+        io_uring_sqe *sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        if (sqe == nullptr) [[unlikely]] {
+          IOUringEventLoop::not_submitted_cnt_ = 0;
+          Unwrap(io_uring_submit(&IOUringEventLoop::holder.ring));
+          sqe = io_uring_get_sqe(&IOUringEventLoop::holder.ring);
+        }
+        sqe->user_data = std::bit_cast<__u64>(&res);
+        io_uring_prep_poll_add(sqe, fd, (is_read ? POLLIN : POLLOUT));
+        ++IOUringEventLoop::holder.cur_in;
+        ++IOUringEventLoop::not_submitted_cnt_;
+      }
+
+      int await_resume() const noexcept { return res.cnt; }
+
+      int fd;
+      bool is_read;
+      IOUringEventLoop::ResHolder res;
+    };
+    co_await PollAwaitable {
+      .fd = fd,
+      .is_read = is_read
+    };
+
+  }
+
   File(int fd)
     : fd(fd) {}
 

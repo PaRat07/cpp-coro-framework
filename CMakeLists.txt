@@ -12,28 +12,13 @@ file(
 include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
 CPMAddPackage("gh:fmtlib/fmt#11.2.0")
-#CPMAddPackage("gh:jtv/libpqxx#7.10.1")
 CPMAddPackage("gh:getml/reflect-cpp#v0.19.0")
-
-#CPMAddPackage("gh:boostorg/winapi#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/predef#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/throw_exception#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/static_assert#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/assert#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/core#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/mp11#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/describe#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/container_hash#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/config#boost-1.88.0")
-#CPMAddPackage("gh:boostorg/stacktrace#boost-1.88.0")
-
-#find_package(libpqxx REQUIRED)
 
 add_library(coros src/noop.cpp)
 
 target_include_directories(coros PUBLIC include)
 
 target_link_libraries(coros PUBLIC fmt::fmt reflectcpp)
-target_link_options(coros PUBLIC -luring)
+target_link_options(coros PUBLIC -luring -lpq)
 
 add_subdirectory(examples)

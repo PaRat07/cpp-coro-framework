@@ -1,12 +1,11 @@
 #include "io_uring_event_loop.h"
 using namespace uring;
-
+#include "apq.h"
 #include <chrono>
 #include <http.h>
 
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-// #include <pqxx/pqxx>
 #include <rfl.hpp>
 #include <rfl/json.hpp>
 #include <sys/socket.h>
@@ -20,6 +19,7 @@ using namespace uring;
 using namespace std::chrono_literals;
 using namespace std::string_literals;
 using namespace std::string_view_literals;
+
 struct InvokeOnConstruct {
     InvokeOnConstruct(auto&& f) { f(); }
 };
@@ -69,6 +69,8 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
                     int randomNumber;
                 };
                 DbResp resp;
+                // co_await SendPQReq(R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
+
                 // for (auto [resp_id, resp_num] : tx.query<int, int>(pqxx::prepped("get_by_id"), random_id)) {
                 //     resp = { resp_id, resp_num };
                 // }
@@ -93,18 +95,10 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
 }
 
 MainTask co_server(File fd) {
-    std::array<Task<>, 2000> tasks;
-    for (auto &i : tasks) {
-      i = [] (File &fd) -> Task<> {
-          while (true) {
-            co_await ProcConn(co_await fd.Accept());
-          }
-          co_return;
-      } (fd);
-    }
-    co_await WhenAll(tasks);
-
-    co_return;
+      while (true) {
+        spawn(ProcConn(co_await fd.Accept()));
+      }
+      co_return;
 }
 
 
@@ -160,6 +154,11 @@ void fork_workers() {
 }
 
 int main() {
+  Connection conn();
+  Pipelined pipe(conn);
+  auto sttmnt = PreparedStmnt<int, int>(conn, "SELECT * FROM users WHERE age < $1 AND height > $2");
+  pipe.Execute(sttmnt, 1, 2);
+  return 0;
     signal(SIGPIPE, SIG_IGN);
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 
