@@ -69,14 +69,14 @@ auto ProcConn(File connfd) -> Task<> {
                 for (auto [resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, random_id)) {
                     resp = { resp_id, resp_num };
                 }
-              std::string body = rfl::json::write(resp);
-              co_await SendResponse(connfd, resp_buf,
-                                    std::array{
-                                      std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                      std::pair{"Server"sv, "Example"sv},
-                                      std::pair{"Connection"sv, "keep-alive"sv}
-                                    },
-                                     body);
+                std::string body = rfl::json::write(resp);
+                co_await SendResponse(connfd, resp_buf,
+                                      std::array{
+                                        std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                        std::pair{"Server"sv, "Example"sv},
+                                        std::pair{"Connection"sv, "keep-alive"sv}
+                                      },
+                                       body);
             }
             else {
                 throw std::runtime_error("incorrect prefix");

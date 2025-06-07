@@ -94,9 +94,11 @@ private:
 
 public:
   auto Read(std::span<char> data, off_t off) -> Task<size_t> {
+    if (int cnt = read(fd, data.data(), data.size()); cnt != -1) {
+      co_return cnt;
+    }
     bool buf = armed;
     armed = true;
-
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
@@ -123,6 +125,9 @@ public:
 
 
   auto Send(std::span<const char> data, int flags) -> Task<size_t> {
+    if (int cnt = send(fd, data.data(), data.size(), flags); cnt != -1) {
+      co_return cnt;
+    }
     bool buf = armed;
     armed = true;
     co_await EpollAwaitable {
@@ -147,6 +152,9 @@ public:
 
 
   auto Recieve(std::span<char> data, int flags = 0) -> Task<size_t> {
+    if (int cnt = recv(fd, data.data(), data.size(), flags); cnt != -1) {
+      co_return cnt;
+    }
     bool buf = armed;
     armed = true;
     co_await EpollAwaitable {
@@ -156,6 +164,20 @@ public:
     };
     co_return Unwrap(recv(fd, data.data(), data.size(), flags));
   }
+
+
+
+  auto Poll(bool is_read) -> Task<> {
+    bool buf = armed;
+    armed = true;
+    co_await EpollAwaitable {
+      .fd = fd,
+      .armed = buf,
+      .event = (is_read ? EPOLLIN : EPOLLOUT)
+    };
+    co_return;
+  }
+
   File(const File &rhs) = delete;
   File(File &&rhs)
     : fd(std::exchange(rhs.fd, -1)),

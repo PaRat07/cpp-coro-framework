@@ -170,7 +170,10 @@ public:
 
   auto Send(std::span<const char> data, int flags) -> Task<size_t> {
     struct SendAwaitable {
-      bool await_ready() const noexcept { return false; }
+      bool await_ready() noexcept {
+        return false;
+        return -1 != (res.cnt = send(fd, data.data(), data.size(), flags));
+      }
 
       void await_suspend(std::coroutine_handle<> handle) noexcept {
         res.handle = handle;
@@ -235,7 +238,10 @@ public:
 
   auto Recieve(std::span<char> data, int flags = 0) -> Task<size_t> {
     struct RecieveAwaitable {
-      bool await_ready() const noexcept { return false; }
+      bool await_ready() noexcept {
+        return false;
+        return -1 != (res.cnt = recv(fd, data.data(), data.size(), flags));
+      }
 
       void await_suspend(std::coroutine_handle<> handle) noexcept {
         res.handle = handle;
