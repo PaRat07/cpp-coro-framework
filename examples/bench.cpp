@@ -154,10 +154,13 @@ void fork_workers() {
 }
 
 int main() {
-  Connection conn();
+  Connection conn("host=localhost port=5432 dbname=dbn user=usr password=pswrd connect_timeout=3");
+  auto sttmnt = PreparedStmnt<int>(conn, "SELECT * FROM people WHERE height > $1;");
   Pipelined pipe(conn);
-  auto sttmnt = PreparedStmnt<int, int>(conn, "SELECT * FROM users WHERE age < $1 AND height > $2");
-  pipe.Execute(sttmnt, 1, 2);
+  pipe.Execute(sttmnt, std::byteswap(100));
+  for (auto [age, height, name] : pipe.Recieve<std::tuple<int, int, std::string>>()) {
+    fmt::println("age: {}, height: {}, name: {}", std::byteswap(age), std::byteswap(height), name);
+  }
   return 0;
     signal(SIGPIPE, SIG_IGN);
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);

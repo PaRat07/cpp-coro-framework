@@ -1,6 +1,8 @@
 #pragma once
 
 #include "io_uring_event_loop.h"
+
+#include <memory>
 using namespace uring;
 
 #include <algorithm>
@@ -18,6 +20,11 @@ using namespace uring;
 #include "sys_utility.h"
 #include "task.h"
 
+void Unwrap(PGconn *conn, PGresult *res) {
+  if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+    throw std::runtime_error(fmt::format("Unwrap failed: {}", PQerrorMessage(conn)));
+  }
+}
 struct Connection {
   Connection(std::string_view conn_str) {
     conn = PQconnectdb(conn_str.data());
@@ -82,13 +89,17 @@ struct OidVal<std::string> : std::integral_constant<Oid, 25> {};
 template<>
 struct OidVal<std::string_view> : std::integral_constant<Oid, 25> {};
 
+
 static size_t sttmnt_cnt = 0;
 template<typename... Ts>
 class PreparedStmnt {
 public:
   PreparedStmnt(Connection &conn, StmtntString<Ts...> stmnt) : name_(fmt::format("unique_sttmnt_name{}", sttmnt_cnt++)) {
     static constexpr std::array<Oid, sizeof...(Ts)> types = { OidVal<Ts>::value... };
-    PQprepare(conn.conn, name_.data(), stmnt.data.data(), sizeof...(Ts), types.data());
+    auto res = PQprepare(conn.conn, name_.data(), stmnt.data.data(), sizeof...(Ts), types.data());
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+      fmt::println("prep err: {}", PQerrorMessage(conn.conn));
+    }
   }
 
   std::string_view GetName() const {
@@ -130,30 +141,38 @@ public:
     static constexpr std::array<int, sizeof...(Ts)> format = { std::is_integral_v<std::remove_cvref_t<decltype(args)>>... };
 
     std::array<const char*, sizeof...(Ts)> args_ptrs;
-    [&args_ptrs] <size_t Ind> (this auto self, std::integral_constant<size_t, Ind>, const auto &sep_arg, const auto&... args) {
-      if constexpr (std::is_integral_v<std::remove_cvref_t<decltype(sep_arg)>>) {
-        args_ptrs[Ind] = reinterpret_cast<const char*>(&sep_arg);
-      } else {
-        args_ptrs[Ind] = sep_arg.data();
-      }
-      // args_ptrs[Ind] = overloaded {
-      //    [] (std::integral auto &&sep_arg) { return reinterpret_cast<const char*>(&sep_arg); },
-      //    [] (              auto &&sep_arg) { return sep_arg.data(); }
-      // } (sep_arg);
-      if constexpr (Ind + 1 < sizeof...(Ts)) {
-        self(std::integral_constant<size_t, Ind + 1>{}, args...);
-      }
-    } (std::integral_constant<size_t, 0>{}, args...);
-    PQsendQueryPrepared(conn_, stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1);
+    if constexpr (sizeof...(args) > 0) {
+      [&args_ptrs] <size_t Ind> (this auto self, std::integral_constant<size_t, Ind>, const auto &sep_arg, const auto&... args) {
+        if constexpr (std::is_integral_v<std::remove_cvref_t<decltype(sep_arg)>>) {
+          args_ptrs[Ind] = reinterpret_cast<const char*>(&sep_arg);
+        } else {
+          args_ptrs[Ind] = sep_arg.data();
+        }
+        // args_ptrs[Ind] = overloaded {
+        //    [] (std::integral auto &&sep_arg) { return reinterpret_cast<const char*>(&sep_arg); },
+        //    [] (              auto &&sep_arg) { return sep_arg.data(); }
+        // } (sep_arg);
+        if constexpr (Ind + 1 < sizeof...(Ts)) {
+          self(std::integral_constant<size_t, Ind + 1>{}, args...);
+        }
+      } (std::integral_constant<size_t, 0>{}, args...);
+    }
+    Unwrap(PQsendQueryPrepared(conn_, stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
+    Unwrap(PQpipelineSync(conn_));
+    Unwrap(PQflush(conn_));
   }
 
   template<typename T>
   std::vector<T> Recieve() {
     auto res = PQgetResult(conn_);
+    while (res == nullptr) {
+      res = PQgetResult(conn_);
+    }
     std::vector<T> ans(PQntuples(res));
     for (ptrdiff_t ind = 0; ind < ans.size(); ++ind) {
       ans[ind] = ParseRow<T>(ind, res);
     }
+    PQclear(res);
     return ans;
   }
 private:
@@ -174,7 +193,7 @@ private:
       [=] <typename... Ts> (std::type_identity<std::tuple<Ts...>>) -> T {
         assert(PQnfields(res) == sizeof...(Ts));
         T ans;
-        [res, row_ind, &ans] <size_t... Inds> (std::index_sequence<Inds>) {
+        [res, row_ind, &ans] <size_t... Inds> (std::index_sequence<Inds...>) {
           ([res, row_ind, &ans] <size_t Ind> (std::index_sequence<Ind>) {
             std::get<Ind>(ans) = overloaded {
               [res, row_ind] (std::type_identity<int32_t>) {

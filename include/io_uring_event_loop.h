@@ -82,7 +82,7 @@ public:
 
 private:
   static inline size_t not_submitted_cnt_ = 0;
-  static inline UringHolder holder;
+  static inline UringHolder holder = {};
 };
 
 consteval in_addr operator""_addr(const char *data, size_t sz) {
