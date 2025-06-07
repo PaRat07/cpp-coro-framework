@@ -25,13 +25,22 @@ void Unwrap(PGconn *conn, PGresult *res) {
     throw std::runtime_error(fmt::format("Unwrap failed: {}", PQerrorMessage(conn)));
   }
 }
+
+
 struct Connection {
-  Connection(std::string_view conn_str) {
-    conn = PQconnectdb(conn_str.data());
+  Connection(std::string init_state) {
+    conn = PQconnectdb(init_state.data());
+    if (PQstatus(conn) != CONNECTION_OK) {
+      PQfinish(conn);
+      throw std::runtime_error("failed to connect to db");
+    }
   }
 
+
+  // private:
   PGconn *conn;
 };
+
 
 // template<size_t Sz>
 // struct ConstexprString {
@@ -91,6 +100,7 @@ struct OidVal<std::string_view> : std::integral_constant<Oid, 25> {};
 
 
 static size_t sttmnt_cnt = 0;
+
 template<typename... Ts>
 class PreparedStmnt {
 public:
@@ -123,7 +133,7 @@ public:
 
   // numbers must be in big endian because idgaf
   template<typename... Ts>
-  void Execute(PreparedStmnt<Ts...> stmnt, const Ts&... args) {
+  void Execute(const PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
     // correct
     static constexpr std::array<Oid, sizeof...(Ts)> types = { OidVal<Ts>::value... };
     // correct
@@ -162,12 +172,16 @@ public:
     Unwrap(PQflush(conn_));
   }
 
-  template<typename T>
-  std::vector<T> Recieve() {
+  PGresult *Recieve() {
     auto res = PQgetResult(conn_);
     while (res == nullptr) {
       res = PQgetResult(conn_);
     }
+    return res;
+  }
+
+  template<typename T>
+  static std::vector<T> Parse(PGresult *res) {
     std::vector<T> ans(PQntuples(res));
     for (ptrdiff_t ind = 0; ind < ans.size(); ++ind) {
       ans[ind] = ParseRow<T>(ind, res);
@@ -175,10 +189,11 @@ public:
     PQclear(res);
     return ans;
   }
+
 private:
 
   template<typename T>
-  T ParseRow(ptrdiff_t row_ind, PGresult *res) {
+  static T ParseRow(ptrdiff_t row_ind, PGresult *res) {
     return overloaded {
       [=] (std::type_identity<int32_t>) {
         assert(PQnfields(res) == 1);
@@ -215,70 +230,77 @@ private:
   PGconn *conn_;
 };
 
-
 struct PipelinedConnection {
-  void Init() {
-    conn = PQconnectdb(init_state.data());
-    if (PQstatus(conn) != CONNECTION_OK) {
-      PQfinish(conn);
-      throw std::runtime_error("failed to connect to db");
-    }
-  }
-  std::string init_state;
+  PipelinedConnection(std::string conn_str)
+    : conn(conn_str),
+      pipe(conn) {}
 
-
-// private:
-    PGconn *conn;
+  Connection conn;
+  Pipelined pipe;
 };
 
-// class PostgresEventLoop {
-// public:
-//   struct ResHolder {
-//     pqxx::result res;
-//     std::coroutine_handle<> handle;
-//   };
-//
-//   static void Resume() {
-//
-//   }
-//
-//   static void Init() {
-//     conn.Init();
-//
-//     spawn([] -> Task<> {
-//       File fd{conn.conn.sock()};
-//       while (true) {
-//         co_await fd.Poll(true);
-//         ResHolder *res_ptr = to_resume.Pop();
-//         res_ptr->res = conn.GetPipe().retrieve().second;
-//         res_ptr->handle.resume();
-//       }
-//       co_return;
-//     });
-//   }
-//
-//   struct ReqAwaitable {
-//     bool await_ready() const noexcept { return false; }
-//
-//     void await_suspend(std::coroutine_handle<> handle) noexcept {
-//       conn.GetPipe().insert(req);
-//       res.handle = handle;
-//       to_resume.Push(&res);
-//     }
-//
-//     pqxx::result await_resume() const noexcept { return res.res; }
-//
-//     std::string_view req;
-//     ResHolder res;
-//   };
-//
-// private:
-//   static inline PipelinedConnection conn;
-//   static inline Queue<ResHolder*> to_resume;
-// };
-//
-// inline Task<pqxx::result> SendPQReq(std::string_view sv) {
-//   co_return co_await PostgresEventLoop::ReqAwaitable {
-//     .req = sv
-//   };
-// }
+
+class PostgresEventLoop {
+public:
+  struct ResHolder {
+    PGresult *res_ptr;
+    std::coroutine_handle<> handle;
+  };
+
+  static void Resume() {}
+
+  static void Init() {
+    conn.emplace("host=localhost port=5432 dbname=dbn user=usr password=pswrd connect_timeout=3");
+
+    spawn([] -> Task<> {
+      File fd(PQsocket(conn->conn.conn));
+      while (true) {
+        co_await fd.Poll(true);
+        ResHolder *res_ptr = to_resume.Pop();
+        res_ptr->res_ptr = conn->pipe.Recieve();
+        res_ptr->handle.resume();
+      }
+      co_return;
+    } ());
+  }
+
+  template<typename... Ts>
+  static void IssueRequest(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
+    conn->pipe.Execute(sttmnt, args...);
+  }
+
+  template<typename ResT>
+  struct ReqAwaitable {
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      res.handle = handle;
+      to_resume.Push(&res);
+    }
+
+    std::vector<ResT> await_resume() const noexcept {
+      return Pipelined::Parse<ResT>(res.res_ptr);
+    }
+
+    ResHolder res;
+  };
+
+  template<typename... Ts>
+  static PreparedStmnt<Ts...> Prepare(StmtntString<Ts...> sttmnt) {
+    return PreparedStmnt<Ts...>(conn->conn, sttmnt);
+  }
+
+  static Connection &GetConn() {
+    return conn->conn;
+  }
+
+private:
+  static inline std::optional<PipelinedConnection> conn;
+  static inline Queue<ResHolder*> to_resume;
+};
+
+template<typename ResT, typename... Ts>
+inline Task<std::vector<ResT>> SendPQReq(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
+  PostgresEventLoop::IssueRequest(sttmnt, args...);
+  co_return co_await PostgresEventLoop::ReqAwaitable<ResT>{};
+}

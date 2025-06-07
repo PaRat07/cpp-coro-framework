@@ -12,7 +12,7 @@ public:
       std::vector<T> new_cont(cont.size());
       if constexpr (std::is_nothrow_move_assignable_v<T>) {
         std::copy(std::make_move_iterator(cont.begin() + beg), std::make_move_iterator(std::min(cont.begin() + beg + cnt, cont.end())), new_cont.begin());
-        std::copy(std::make_move_iterator(cont.begin()), std::make_move_iterator(cont.begin() + std::max(0, cnt + beg - cont.size())), new_cont.begin() + beg + cnt - cont.size());
+        std::copy(std::make_move_iterator(cont.begin()), std::make_move_iterator(cont.begin() + std::max<std::ptrdiff_t>(0, cnt + beg - cont.size())), new_cont.begin() + beg + cnt - cont.size());
       } else {
         std::copy(cont.begin() + beg, std::min(cont.begin() + beg + cnt, cont.end()), new_cont.begin());
         std::copy(cont.begin(), cont.begin() + std::max(0, cnt + beg - cont.size()), new_cont.begin() + beg + cnt - cont.size());

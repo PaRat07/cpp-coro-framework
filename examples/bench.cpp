@@ -28,11 +28,8 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
-    // ONCE {
-    //     db_conn.prepare("get_by_id", R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
-    // };
-    // std::cout << "Started" << std::endl;
+auto ProcConn(File connfd) -> Task<> {
+    static auto sttmnt = PreparedStmnt<int>(PostgresEventLoop::GetConn(), R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -69,11 +66,9 @@ auto ProcConn(File connfd /*, pqxx::connection &db_conn*/) -> Task<> {
                     int randomNumber;
                 };
                 DbResp resp;
-                // co_await SendPQReq(R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
-
-                // for (auto [resp_id, resp_num] : tx.query<int, int>(pqxx::prepped("get_by_id"), random_id)) {
-                //     resp = { resp_id, resp_num };
-                // }
+                for (auto [resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, random_id)) {
+                    resp = { resp_id, resp_num };
+                }
               std::string body = rfl::json::write(resp);
               co_await SendResponse(connfd, resp_buf,
                                     std::array{
@@ -154,14 +149,6 @@ void fork_workers() {
 }
 
 int main() {
-  Connection conn("host=localhost port=5432 dbname=dbn user=usr password=pswrd connect_timeout=3");
-  auto sttmnt = PreparedStmnt<int>(conn, "SELECT * FROM people WHERE height > $1;");
-  Pipelined pipe(conn);
-  pipe.Execute(sttmnt, std::byteswap(100));
-  for (auto [age, height, name] : pipe.Recieve<std::tuple<int, int, std::string>>()) {
-    fmt::println("age: {}, height: {}, name: {}", std::byteswap(age), std::byteswap(height), name);
-  }
-  return 0;
     signal(SIGPIPE, SIG_IGN);
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 
