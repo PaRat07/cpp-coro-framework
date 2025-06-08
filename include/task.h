@@ -21,7 +21,7 @@ template <typename Result = void>
 class [[CORO_ATTRIBUTES]] Task {
 public:
     struct Promise {
-        std::variant<Result, std::exception_ptr> result;
+        std::variant<std::monostate, Result, std::exception_ptr> result;
         std::coroutine_handle<> caller_handle;
 
         Task get_return_object() noexcept {
@@ -70,7 +70,8 @@ public:
         Result GetResult() {
             return std::move(result).visit(overloaded {
                 [] (Result &&res)               -> Result&& { return res; },
-                [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); }
+                [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); },
+                [] (std::monostate)             -> Result&& { std::terminate(); }
             });
         }
     };
@@ -93,8 +94,9 @@ public:
 
         Result await_resume() requires(!std::is_same_v<Result, void>) {
             return std::move(handle.promise().result).visit(overloaded {
-                [] (Result &&res)               -> Result&&{ return res; },
-                [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); }
+                [] (Result &&res)               -> Result&& { return res; },
+                [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); },
+                [] (std::monostate)             -> Result&& { std::terminate(); }
             });
         }
     };

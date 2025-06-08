@@ -29,7 +29,7 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 auto ProcConn(File connfd) -> Task<> {
-    static auto sttmnt = PreparedStmnt<int>(PostgresEventLoop::GetConn(), R"("SELECT "id", "randomnumber" FROM "world" WHERE id = $1")");
+    auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -66,8 +66,8 @@ auto ProcConn(File connfd) -> Task<> {
                     int randomNumber;
                 };
                 DbResp resp;
-                for (auto [resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, random_id)) {
-                    resp = { resp_id, resp_num };
+                for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, std::byteswap(random_id))) {
+                    resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
                 }
                 std::string body = rfl::json::write(resp);
                 co_await SendResponse(connfd, resp_buf,
@@ -192,7 +192,7 @@ int main() {
     //   } ().RunLoop<IOUringEventLoop>();
     // }
 
-    co_server(fd).RunLoop<IOUringEventLoop>();
+    co_server(fd).RunLoop<IOUringEventLoop, PostgresEventLoop>();
 }
 
 
