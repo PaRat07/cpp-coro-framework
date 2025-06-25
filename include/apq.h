@@ -103,7 +103,7 @@ public:
   PreparedStmnt(Connection &conn, StmtntString<Ts...> stmnt) : name_(fmt::format("unique_sttmnt_name{}", sttmnt_cnt++)) {
     static constexpr std::array<Oid, sizeof...(Ts)> types = { OidVal<Ts>::value... };
     Unwrap(conn.conn, 1 == PQsendPrepare(conn.conn, name_.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    Unwrap(PQpipelineSync(conn.conn));
+    Unwrap(conn.conn, PQpipelineSync(conn.conn));
   }
 
   std::string_view GetName() const {
@@ -159,8 +159,6 @@ public:
       } (std::integral_constant<size_t, 0>{}, args...);
     }
     Unwrap(PQsendQueryPrepared(conn_, stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
-    Unwrap(PQpipelineSync(conn_));
-    Unwrap(PQflush(conn_));
   }
 
   template<typename T>
@@ -236,7 +234,10 @@ public:
   static void Resume() {}
 
   static void Init() {
-    conn.emplace("host=localhost port=5432 dbname=dbn user=usr password=pswrd connect_timeout=3");
+    {
+      std::string conn_str = fmt::format("host=tfb-database port=5432 dbname=hello_world user={} password={} connect_timeout=3", std::getenv("PGUSER"), std::getenv("PGPASS"));
+      conn.emplace(conn_str.data());
+    }
 
     spawn([] -> Task<> {
       File fd(PQsocket(conn->conn.conn));
@@ -278,12 +279,12 @@ public:
   template<typename... Ts>
   static Task<PreparedStmnt<Ts...>> Prepare(std::type_identity_t<StmtntString<Ts...>> sttmnt) {
     auto ans = PreparedStmnt<Ts...>(conn->conn, sttmnt);
-    co_await ReqAwaitable<std::tuple<int>>{};
+    co_await ReqAwaitable<std::tuple<>>{};
     co_return ans;
   }
 
-  static Connection &GetConn() {
-    return conn->conn;
+  static PGconn *GetConn() {
+    return conn->conn.conn;
   }
 
 private:
@@ -294,5 +295,7 @@ private:
 template<typename ResT, typename... Ts>
 inline Task<std::vector<ResT>> SendPQReq(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
   PostgresEventLoop::IssueRequest(sttmnt, args...);
+  Unwrap(PostgresEventLoop::GetConn(), 1 == PQsendFlushRequest(PostgresEventLoop::GetConn()));
+  Unwrap(PostgresEventLoop::GetConn(), 0 == PQflush(PostgresEventLoop::GetConn()));
   co_return co_await PostgresEventLoop::ReqAwaitable<ResT>{};
 }

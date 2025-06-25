@@ -29,7 +29,7 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 auto ProcConn(File connfd) -> Task<> {
-    auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
+    static auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
