@@ -96,7 +96,7 @@ MainTask co_server(File fd) {
       i = [] (Acceptor &acceptor, decltype(sttmnt) &stmnt) -> Task<> {
         while (true) {
           File fd = co_await acceptor.Accept();
-          co_await ProcConn(fd, sttmnt);
+          co_await ProcConn(fd, stmnt);
         }
         co_return;
       } (acceptor, sttmnt);

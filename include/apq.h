@@ -250,7 +250,8 @@ public:
         if (!to_resume.Empty()) {
           to_resume.Pop().resume();
         } else {
-          std::terminate();
+          fmt::println("queue is empty");
+          // std::terminate();
         }
       }
       co_return;
