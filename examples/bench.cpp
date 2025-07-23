@@ -29,7 +29,7 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 auto ProcConn(File connfd) -> Task<> {
-    // static auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
+    static auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -46,38 +46,38 @@ auto ProcConn(File connfd) -> Task<> {
                                 },
                                  "Hello, world!");
         }
-        // else if (req.request_target == "/json") {
-        //     struct JsonResp {
-        //         std::string_view message;
-        //     };
-        //     std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
-        //     co_await SendResponse(connfd, resp_buf,
-        //                           std::array{
-        //                             std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-        //                             std::pair{"Server"sv, "Example"sv},
-        //                             std::pair{"Connection"sv, "keep-alive"sv}
-        //                           },
-        //                            body);
-        // }
-        // else if (req.request_target == "/db") {
-        //     int random_id = rand() % 10'000;
-        //     struct DbResp {
-        //         int id;
-        //         int randomNumber;
-        //     };
-        //     DbResp resp;
-        //     for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, std::byteswap(random_id))) {
-        //         resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
-        //     }
-        //     std::string body = rfl::json::write(resp);
-        //     co_await SendResponse(connfd, resp_buf,
-        //                           std::array{
-        //                             std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-        //                             std::pair{"Server"sv, "Example"sv},
-        //                             std::pair{"Connection"sv, "keep-alive"sv}
-        //                           },
-        //                            body);
-        // }
+        else if (req.request_target == "/json") {
+            struct JsonResp {
+                std::string_view message;
+            };
+            std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
+            co_await SendResponse(connfd, resp_buf,
+                                  std::array{
+                                    std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                    std::pair{"Server"sv, "Example"sv},
+                                    std::pair{"Connection"sv, "keep-alive"sv}
+                                  },
+                                   body);
+        }
+        else if (req.request_target == "/db") {
+            int random_id = rand() % 10'000;
+            struct DbResp {
+                int id;
+                int randomNumber;
+            };
+            DbResp resp;
+            for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, std::byteswap(random_id))) {
+                resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
+            }
+            std::string body = rfl::json::write(resp);
+            co_await SendResponse(connfd, resp_buf,
+                                  std::array{
+                                    std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                    std::pair{"Server"sv, "Example"sv},
+                                    std::pair{"Connection"sv, "keep-alive"sv}
+                                  },
+                                   body);
+        }
         else {
           throw std::runtime_error("incorrect prefix");
         }
@@ -202,7 +202,7 @@ int main() {
     //   } ().RunLoop<IOUringEventLoop>();
     // }
 
-    co_server(fd).RunLoop<IOUringEventLoop>();
+    co_server(fd).RunLoop<IOUringEventLoop, PostgresEventLoop>();
 }
 
 
