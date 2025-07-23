@@ -28,8 +28,7 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto ProcConn(File connfd) -> Task<> {
-    static auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
+auto ProcConn(File connfd, PreparedStmnt<int> &stmnt) -> Task<> {
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -66,7 +65,7 @@ auto ProcConn(File connfd) -> Task<> {
                 int randomNumber;
             };
             DbResp resp;
-            for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, std::byteswap(random_id))) {
+            for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(stmnt, std::byteswap(random_id))) {
                 resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
@@ -90,16 +89,17 @@ auto ProcConn(File connfd) -> Task<> {
 }
 
 MainTask co_server(File fd) {
+    auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
     Acceptor acceptor(fd);
     std::array<Task<>, 2> workers;
     for (auto &i : workers) {
-      i = [] (Acceptor &acceptor) -> Task<> {
+      i = [] (Acceptor &acceptor, decltype(sttmnt) &stmnt) -> Task<> {
         while (true) {
           File fd = co_await acceptor.Accept();
-          co_await ProcConn(fd);
+          co_await ProcConn(fd, sttmnt);
         }
         co_return;
-      } (acceptor);
+      } (acceptor, sttmnt);
     }
     co_await WhenAll(workers);
     co_return;
