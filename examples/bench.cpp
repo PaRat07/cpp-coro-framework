@@ -93,7 +93,7 @@ MainTask co_server(File fd) {
     Acceptor acceptor(fd);
     std::array<Task<>, 2> workers;
     for (auto &i : workers) {
-      i = [] (Acceptor &acceptor, decltype(sttmnt) &stmnt) -> Task<> {
+      i = [] (Acceptor &acceptor, PreparedStmnt<int> &stmnt) static -> Task<> {
         while (true) {
           File fd = co_await acceptor.Accept();
           co_await ProcConn(fd, stmnt);

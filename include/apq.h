@@ -295,7 +295,8 @@ private:
 template<typename ResT, typename... Ts>
 inline Task<std::vector<ResT>> SendPQReq(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
   PostgresEventLoop::IssueRequest(sttmnt, args...);
-  Unwrap(PostgresEventLoop::GetConn(), 1 == PQsendFlushRequest(PostgresEventLoop::GetConn()));
+  // Unwrap(PostgresEventLoop::GetConn(), 1 == PQsendFlushRequest(PostgresEventLoop::GetConn()));
+  co_await File(PQsocket(PostgresEventLoop::GetConn())).Poll(false);
   Unwrap(PostgresEventLoop::GetConn(), 0 == PQflush(PostgresEventLoop::GetConn()));
   co_return co_await PostgresEventLoop::ReqAwaitable<ResT>{};
 }
