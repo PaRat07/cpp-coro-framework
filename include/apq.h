@@ -228,14 +228,13 @@ struct PipelinedConnection {
   Pipelined pipe;
 };
 
-
 class PostgresEventLoop {
 public:
   static void Resume() {}
 
   static void Init() {
     {
-      std::string conn_str = fmt::format("host=tfb-database port=5432 dbname=hello_world user={} password={} connect_timeout=3", std::getenv("PGUSER"), std::getenv("PGPASS"));
+      std::string conn_str = "host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass";
       conn.emplace(conn_str.data());
     }
 

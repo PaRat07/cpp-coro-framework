@@ -29,71 +29,80 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 auto ProcConn(File connfd) -> Task<> {
-    static auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
+    // static auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "people" WHERE id = $1;)");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
     try {
-        while (reuse_connection) {
-            HttpRequest req = co_await parser.ParseRequest();
-            reuse_connection = req.keep_alive;
-            if (req.request_target == "/plaintext") {
-                co_await SendResponse(connfd, resp_buf,
-                                      std::array{
-                                        std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
-                                        std::pair{"Server"sv, "Example"sv},
-                                        std::pair{"Connection"sv, "keep-alive"sv}
-                                      },
-                                       "Hello, world!");
-            }
-            else if (req.request_target == "/json") {
-                struct JsonResp {
-                    std::string_view message;
-                };
-                std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
-                co_await SendResponse(connfd, resp_buf,
-                                      std::array{
-                                        std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                        std::pair{"Server"sv, "Example"sv},
-                                        std::pair{"Connection"sv, "keep-alive"sv}
-                                      },
-                                       body);
-            }
-            else if (req.request_target == "/db") {
-                int random_id = rand() % 10'000;
-                struct DbResp {
-                    int id;
-                    int randomNumber;
-                };
-                DbResp resp;
-                for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, std::byteswap(random_id))) {
-                    resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
-                }
-                std::string body = rfl::json::write(resp);
-                co_await SendResponse(connfd, resp_buf,
-                                      std::array{
-                                        std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                        std::pair{"Server"sv, "Example"sv},
-                                        std::pair{"Connection"sv, "keep-alive"sv}
-                                      },
-                                       body);
-            }
-            else {
-                throw std::runtime_error("incorrect prefix");
-            }
+      while (reuse_connection) {
+        HttpRequest req = co_await parser.ParseRequest();
+        reuse_connection = req.keep_alive;
+        if (req.request_target == "/plaintext") {
+          co_await SendResponse(connfd, resp_buf,
+                                std::array{
+                                  std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
+                                  std::pair{"Server"sv, "Example"sv},
+                                  std::pair{"Connection"sv, "keep-alive"sv}
+                                },
+                                 "Hello, world!");
         }
+        // else if (req.request_target == "/json") {
+        //     struct JsonResp {
+        //         std::string_view message;
+        //     };
+        //     std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
+        //     co_await SendResponse(connfd, resp_buf,
+        //                           std::array{
+        //                             std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+        //                             std::pair{"Server"sv, "Example"sv},
+        //                             std::pair{"Connection"sv, "keep-alive"sv}
+        //                           },
+        //                            body);
+        // }
+        // else if (req.request_target == "/db") {
+        //     int random_id = rand() % 10'000;
+        //     struct DbResp {
+        //         int id;
+        //         int randomNumber;
+        //     };
+        //     DbResp resp;
+        //     for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(sttmnt, std::byteswap(random_id))) {
+        //         resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
+        //     }
+        //     std::string body = rfl::json::write(resp);
+        //     co_await SendResponse(connfd, resp_buf,
+        //                           std::array{
+        //                             std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+        //                             std::pair{"Server"sv, "Example"sv},
+        //                             std::pair{"Connection"sv, "keep-alive"sv}
+        //                           },
+        //                            body);
+        // }
+        else {
+          throw std::runtime_error("incorrect prefix");
+        }
+      }
     } catch (...) {
       // fmt::println("failed");
-        // std::cerr << "Failed: " << std::endl;
+      // std::cerr << "Failed: " << std::endl;
     }
     co_return;
 }
 
 MainTask co_server(File fd) {
-      while (true) {
-        spawn(ProcConn(co_await fd.Accept()));
-      }
-      co_return;
+    Acceptor acceptor(fd);
+    std::array<Task<>, 2> workers;
+    for (auto &i : workers) {
+      i = [] (Acceptor &acceptor) -> Task<> {
+        while (true) {
+          File fd = co_await acceptor.Accept();
+          co_await ProcConn(fd);
+        }
+        co_return;
+      } (acceptor);
+    }
+    co_await WhenAll(workers);
+    co_return;
 }
 
 
@@ -178,7 +187,8 @@ int main() {
         close(fd);
         throw std::system_error(errno, std::system_category(), "listen error");
     }
-    // fork_workers();
+
+    fork_workers();
     // fork();fork();fork();fork();
 
     // while (true) {
@@ -192,7 +202,7 @@ int main() {
     //   } ().RunLoop<IOUringEventLoop>();
     // }
 
-    co_server(fd).RunLoop<IOUringEventLoop, PostgresEventLoop>();
+    co_server(fd).RunLoop<IOUringEventLoop>();
 }
 
 

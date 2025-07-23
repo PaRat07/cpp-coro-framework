@@ -18,7 +18,7 @@ add_library(coros src/noop.cpp)
 
 target_include_directories(coros PUBLIC include)
 
-target_link_libraries(coros PUBLIC fmt::fmt reflectcpp)
+target_link_libraries(coros PUBLIC reflectcpp fmt::fmt-header-only)
 target_link_options(coros PUBLIC -luring -lpq)
 
 add_subdirectory(examples)

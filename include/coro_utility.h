@@ -4,6 +4,27 @@
 
 #include "task.h"
 
+struct NoSuspendTask;
+
+class spawn_task {
+public:
+  using promise_type = NoSuspendTask;
+  std::coroutine_handle<promise_type> coro_;
+};
+struct NoSuspendTask {
+  std::coroutine_handle<NoSuspendTask> self;
+  // Called by the compiler to get the coroutine's return object:
+  auto get_return_object() noexcept {
+    return spawn_task{ std::coroutine_handle<NoSuspendTask>::from_promise(*this) };
+  }
+
+  std::suspend_never initial_suspend() noexcept { return {}; }
+
+  std::suspend_never final_suspend() noexcept { return {}; }
+
+  void return_void() noexcept {}
+  void unhandled_exception() noexcept { std::terminate(); }
+};
 // usage std::coroutine_handle<> my_handle = co_await Self();
 inline auto Self() {
     struct SelfAwaitable {
@@ -59,12 +80,14 @@ Task<> WhenAllImpl([[clang::coro_await_elidable_argument]] Ts&&... tasks) {
 template<typename... Ts>
 Task<std::tuple<DevoidifyedT<Ts>...>> WhenAll([[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) {
     std::tuple<DevoidifyedT<Ts>...> ans;
-    co_await [&ans] <size_t... Inds> (std::index_sequence<Inds...>, [[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) -> Task<> {
+    co_await [] <size_t... Inds> (auto &ans, std::index_sequence<Inds...>, [[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) -> Task<> {
         co_await WhenAllImpl(SaveTo(Devoidify(std::move(tasks...[Inds])), std::get<Inds>(ans))...);
-    } (std::make_index_sequence<sizeof...(Ts)>{}, std::move(tasks)...);
+    } (ans, std::make_index_sequence<sizeof...(Ts)>{}, std::move(tasks)...);
 
     co_return ans;
 }
+
+
 
 Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) {
     std::coroutine_handle<> self = co_await Self();
@@ -82,34 +105,11 @@ Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) 
 
 
 
-struct spawn_task_promise;
-
-class spawn_task {
-public:
-    using promise_type = spawn_task_promise;
-    std::coroutine_handle<promise_type> coro_;
-};
-struct spawn_task_promise {
-    std::coroutine_handle<spawn_task_promise> self;
-    // Called by the compiler to get the coroutine's return object:
-    auto get_return_object() noexcept {
-        return spawn_task{ std::coroutine_handle<spawn_task_promise>::from_promise(*this) };
-    }
-
-    // Don’t run immediately—suspend until explicit resume:
-    std::suspend_never initial_suspend() noexcept { return {}; }
-
-    // At final suspend, destroy the coroutine frame:
-    std::suspend_never final_suspend() noexcept { return {}; }
-
-    // Standard promise functions:
-    void return_void() noexcept {}
-    void unhandled_exception() noexcept { std::terminate(); }
-};
 
 template <typename Awaitable>
 auto spawn(Awaitable awaitable) -> void {
-    [] (Awaitable awaitable) -> spawn_task {
+    [] (Awaitable awaitable) static -> spawn_task {
         co_await awaitable;
-    } (std::move(awaitable));
+    } (std::forward<Awaitable&&>(awaitable));
 }
+

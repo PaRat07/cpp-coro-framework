@@ -13,9 +13,10 @@
 #include <poll.h>
 #include <sys/socket.h>
 
+#include "coro_utility.h"
+#include "my-queue.h"
 #include "sys_utility.h"
 #include "task.h"
-#include "coro_utility.h"
 namespace uring {
 namespace chr = std::chrono;
 using namespace std::chrono_literals;
@@ -43,7 +44,11 @@ public:
     unsigned head;
     size_t cur_proc = 0;
     io_uring_for_each_cqe(&holder.ring, head, cqe) {
-      ResHolder &res_ref = *std::bit_cast<ResHolder*>(cqe->user_data);
+      auto res_ptr = std::bit_cast<ResHolder*>(cqe->user_data);;
+      if (res_ptr == nullptr) {
+        throw std::runtime_error("wtf");
+      }
+      ResHolder &res_ref = *res_ptr;
       res_ref.cnt = std::max(0, cqe->res);
       --holder.cur_in;
       res_ref.handle.resume();
@@ -312,5 +317,79 @@ public:
   }
 
   int fd = -1;
+};
+
+struct Acceptor {
+private:
+  struct AcceptorWaiter {
+    int ans_fd;
+    std::coroutine_handle<> handle;
+  };
+  struct AcceptAwaitable {
+    bool await_ready() noexcept {
+      return false;
+    }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      waiter.handle = handle;
+      acc_queue_.Push(&waiter);
+      if (acc_poller_) {
+        auto buf = acc_poller_;
+        acc_poller_ = {};
+        buf.resume();
+      }
+    }
+
+    int await_resume() const noexcept { return waiter.ans_fd; }
+
+    AcceptorWaiter waiter;
+    std::coroutine_handle<> &acc_poller_;
+    Queue<AcceptorWaiter*> &acc_queue_;
+  };
+
+  struct WaitUntilAppearAwaitable {
+    bool await_ready() noexcept {
+      return false;
+    }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+      handle_ = handle;
+    }
+
+    void await_resume() const noexcept {
+    }
+
+    std::coroutine_handle<> &handle_;
+  };
+
+public:
+  Acceptor(File &fd) {
+    fd_ = fd.fd;
+    spawn([] (Acceptor &acc) static -> Task<> {
+      auto file = File(acc.fd_);
+      while (true) {
+        int accepted = (co_await file.Accept()).fd;
+        if (acc.queue_.Empty()) [[unlikely]] {
+          co_await WaitUntilAppearAwaitable{ acc.poller_ };
+        }
+        auto to_res = acc.queue_.Pop();
+        to_res->ans_fd = accepted;
+        to_res->handle.resume();
+      }
+      co_return;
+    } (*this));
+  }
+
+  auto Accept() -> Task<File> {
+    co_return co_await AcceptAwaitable{
+      .acc_queue_ = queue_,
+      .acc_poller_ = poller_
+    };
+  }
+
+private:
+  int fd_;
+  std::coroutine_handle<> poller_ = {};
+  Queue<AcceptorWaiter*> queue_;
 };
 } // namespace uring
