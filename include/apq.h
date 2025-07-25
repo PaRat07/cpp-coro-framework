@@ -13,12 +13,13 @@
 #include <span>
 #include <string>
 
-#include "fmt/format.h"
 #include "coro_utility.h"
+#include "fmt/format.h"
 #include "my-queue.h"
 #include "postgresql/libpq-fe.h"
 #include "sys_utility.h"
 #include "task.h"
+#include "timed_event_loop.h"
 
 void Unwrap(PGconn *conn, PGresult *res) {
   if (PQresultStatus(res) != PGRES_COMMAND_OK) [[unlikely]] {
@@ -164,8 +165,26 @@ public:
   template<typename T>
   std::vector<T> Recieve() {
     std::vector<T> ans;
+    bool err = false;
     for (PGresPtr res_ptr{ PQgetResult(conn_) }; res_ptr; res_ptr = PGresPtr{ PQgetResult(conn_) }) {
-      std::ranges::copy(Parse<T>(res_ptr.get()), std::back_inserter(ans));
+      switch (PQresultStatus(res_ptr.get())) {
+        case PGRES_TUPLES_OK: {
+          std::ranges::copy(Parse<T>(res_ptr.get()), std::back_inserter(ans));
+          break;
+        }
+        case PGRES_FATAL_ERROR:
+        case PGRES_PIPELINE_ABORTED: {
+          err = true;
+          break;
+        }
+        default: {
+          // idk
+        }
+      }
+    }
+    if (err) {
+      Unwrap(conn_, 1 == PQenterPipelineMode(conn_));
+      Unwrap(conn_, 1 == PQpipelineSync(conn_));
     }
     return ans;
   }
@@ -239,19 +258,24 @@ public:
     }
 
     spawn([] -> Task<> {
-      File fd(PQsocket(conn->conn.conn));
       while (true) {
-        co_await fd.Poll(true);
-        Unwrap(conn->conn.conn, 1 == PQconsumeInput(conn->conn.conn));
+        try {
+          File fd(PQsocket(conn->conn.conn));
+          // co_await SleepFor(std::chrono::milliseconds(10));
+          co_await fd.Poll(true);
+          Unwrap(conn->conn.conn, 1 == PQconsumeInput(conn->conn.conn));
 
-        if (PQisBusy(conn->conn.conn)) {
-            continue;
-        }
-        if (!to_resume.Empty()) {
-          to_resume.Pop().resume();
-        } else {
-          fmt::println("queue is empty");
-          // std::terminate();
+          if (PQisBusy(conn->conn.conn)) {
+              continue;
+          }
+          if (!to_resume.Empty()) {
+            to_resume.Pop().resume();
+          } else {
+            std::cout << ("queue is empty") << std::endl;
+            std::terminate();
+          }
+        } catch (...) {
+          std::terminate();
         }
       }
       co_return;
@@ -295,8 +319,10 @@ private:
 template<typename ResT, typename... Ts>
 inline Task<std::vector<ResT>> SendPQReq(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
   PostgresEventLoop::IssueRequest(sttmnt, args...);
+
   // Unwrap(PostgresEventLoop::GetConn(), 1 == PQsendFlushRequest(PostgresEventLoop::GetConn()));
   co_await File(PQsocket(PostgresEventLoop::GetConn())).Poll(false);
+  Unwrap(PostgresEventLoop::GetConn(), 1 == PQpipelineSync(PostgresEventLoop::GetConn()));
   Unwrap(PostgresEventLoop::GetConn(), 0 == PQflush(PostgresEventLoop::GetConn()));
   co_return co_await PostgresEventLoop::ReqAwaitable<ResT>{};
 }

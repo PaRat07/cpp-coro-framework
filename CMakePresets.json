@@ -14,7 +14,7 @@
       "generator": "Ninja",
       "hidden": true,
       "warnings": {
-        "dev": true,
+        "dev": false,
         "uninitialized": true
       },
       "errors": {
@@ -26,7 +26,7 @@
         "CMAKE_CXX_COMPILER" : "/usr/bin/clang++-20",
         "CMAKE_LINKER_TYPE" : "LLD",
         "CMAKE_CXX_STANDARD" : "26",
-        "CMAKE_CXX_FLAGS" : "-std=c++2c -fexperimental-library -D_LIBCPP_ENABLE_EXPERIMENTAL -stdlib=libc++ -Wall -Wpedantic -Wextra -D_LIBCPP_ABI_ENABLE_UNIQUE_PTR_TRIVIAL_ABI"
+        "CMAKE_CXX_FLAGS" : "-std=c++2c -fexperimental-library -D_LIBCPP_ENABLE_EXPERIMENTAL -stdlib=libc++ -D_LIBCPP_ABI_ENABLE_UNIQUE_PTR_TRIVIAL_ABI"
       }
     },
     {
@@ -48,7 +48,7 @@
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -flto=full -march=native -fno-plt -fomit-frame-pointer -fsplit-stack -mtune=native -mllvm -enable-jump-table-to-switch"
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -flto=full -march=native -mtune=native -mllvm -enable-jump-table-to-switch"
       }
     }
   ],
