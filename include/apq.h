@@ -20,7 +20,7 @@
 #include "sys_utility.h"
 #include "task.h"
 #include "timed_event_loop.h"
-
+namespace internal {
 void Unwrap(PGconn *conn, PGresult *res) {
   if (PQresultStatus(res) != PGRES_COMMAND_OK) [[unlikely]] {
     throw std::runtime_error(fmt::format("Unwrap failed: {}", PQerrorMessage(conn)));
@@ -32,17 +32,21 @@ void Unwrap(PGconn *conn, bool res) {
     throw std::runtime_error(fmt::format("Unwrap failed: {}", PQerrorMessage(conn)));
   }
 }
-
+} // namespace internal
 
 struct Connection {
+public:
   Connection(std::string init_state) {
     conn = PQconnectdb(init_state.data());
-    Unwrap(conn, PQstatus(conn) == CONNECTION_OK);
-    Unwrap(conn, 0 == PQsetnonblocking(conn, 1));
+    internal::Unwrap(conn, PQstatus(conn) == CONNECTION_OK);
+    internal::Unwrap(conn, 0 == PQsetnonblocking(conn, 1));
   }
 
+  PGconn *GetRaw() {
+    return conn;
+  }
 
-  // private:
+private:
   PGconn *conn;
 };
 
@@ -82,6 +86,9 @@ struct StmtntString {
 
   std::string_view data;
 };
+
+
+namespace internal {
 // fuck me https://github.com/userver-framework/userver/blob/208a820640ecef02199521932239e90751122b48/postgresql/src/storages/postgres/exceptions.cpp#L18
 template<typename T>
 struct OidVal;
@@ -97,14 +104,20 @@ struct OidVal<std::string_view> : std::integral_constant<Oid, 25> {};
 
 
 static size_t sttmnt_cnt = 0;
+} // namespace internal
+
 
 template<typename... Ts>
 class PreparedStmnt {
 public:
-  PreparedStmnt(Connection &conn, StmtntString<Ts...> stmnt) : name_(fmt::format("unique_sttmnt_name{}", sttmnt_cnt++)) {
-    static constexpr std::array<Oid, sizeof...(Ts)> types = { OidVal<Ts>::value... };
-    Unwrap(conn.conn, 1 == PQsendPrepare(conn.conn, name_.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    Unwrap(conn.conn, PQpipelineSync(conn.conn));
+  PreparedStmnt(Connection &conn, StmtntString<Ts...> stmnt) : name_(fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++)) {
+    static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
+    internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name_.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
+    {
+      PGresPtr resp{PQgetResult(conn.GetRaw())};
+      assert(PQresultStatus(resp.get()) == PGRES_COMMAND_OK);
+    }
+    assert(!PQgetResult(conn.GetRaw()));
   }
 
   std::string_view GetName() const {
@@ -115,214 +128,116 @@ private:
   std::string name_;
 };
 
-class Pipelined {
-public:
-  Pipelined(Connection &conn) {
-    conn_ = conn.conn;
-    Unwrap(conn_, 1 == PQenterPipelineMode(conn_));
-  }
 
-  ~Pipelined() {
-    Unwrap(conn_, 1 == PQexitPipelineMode(conn_));
-  }
-
-  // numbers must be in big endian because idgaf
-  template<typename... Ts>
-  void Execute(const PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
-    static constexpr std::array<Oid, sizeof...(Ts)> types = { OidVal<Ts>::value... };
-    static constexpr std::array<int, sizeof...(Ts)> szs = {
-      [&] {
-        using ArgT = std::remove_cvref_t<decltype(args)>;
-        if constexpr (!std::is_integral_v<ArgT>) {
-          return args.size();
-        } else {
-          return sizeof(ArgT);
-        }
-      } ()...
-    };
-    static constexpr std::array<int, sizeof...(Ts)> format = { std::is_integral_v<std::remove_cvref_t<decltype(args)>>... };
-
-    std::array<const char*, sizeof...(Ts)> args_ptrs;
-    if constexpr (sizeof...(args) > 0) {
-      [&args_ptrs] <size_t Ind> (this auto self, std::integral_constant<size_t, Ind>, const auto &sep_arg, const auto&... args) {
-        if constexpr (std::is_integral_v<std::remove_cvref_t<decltype(sep_arg)>>) {
-          args_ptrs[Ind] = reinterpret_cast<const char*>(&sep_arg);
-        } else {
-          args_ptrs[Ind] = sep_arg.data();
-        }
-        // args_ptrs[Ind] = overloaded {
-        //    [] (std::integral auto &&sep_arg) { return reinterpret_cast<const char*>(&sep_arg); },
-        //    [] (              auto &&sep_arg) { return sep_arg.data(); }
-        // } (sep_arg);
-        if constexpr (Ind + 1 < sizeof...(Ts)) {
-          self(std::integral_constant<size_t, Ind + 1>{}, args...);
-        }
-      } (std::integral_constant<size_t, 0>{}, args...);
-    }
-    Unwrap(PQsendQueryPrepared(conn_, stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
-  }
-
-  template<typename T>
-  std::vector<T> Recieve() {
-    std::vector<T> ans;
-    bool err = false;
-    for (PGresPtr res_ptr{ PQgetResult(conn_) }; res_ptr; res_ptr = PGresPtr{ PQgetResult(conn_) }) {
-      switch (PQresultStatus(res_ptr.get())) {
-        case PGRES_TUPLES_OK: {
-          std::ranges::copy(Parse<T>(res_ptr.get()), std::back_inserter(ans));
-          break;
-        }
-        case PGRES_FATAL_ERROR:
-        case PGRES_PIPELINE_ABORTED: {
-          err = true;
-          break;
-        }
-        default: {
-          // idk
-        }
+namespace internal {
+// numbers must be in big endian because idgaf
+template<typename... Ts>
+void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
+  static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
+  static constexpr std::array<int, sizeof...(Ts)> szs = {
+    [&] {
+      using ArgT = std::remove_cvref_t<decltype(args)>;
+      if constexpr (!std::is_integral_v<ArgT>) {
+        return args.size();
+      } else {
+        return sizeof(ArgT);
       }
-    }
-    if (err) {
-      Unwrap(conn_, 1 == PQenterPipelineMode(conn_));
-      Unwrap(conn_, 1 == PQpipelineSync(conn_));
-    }
-    return ans;
-  }
-
-private:
-  template<typename T>
-  static std::vector<T> Parse(PGresult *res) {
-    if (res == nullptr) return {};
-    std::vector<T> ans(PQntuples(res));
-    for (ptrdiff_t ind = 0; ind < ans.size(); ++ind) {
-      ans[ind] = ParseRow<T>(ind, res);
-    }
-    return ans;
-  }
-
-  template<typename T>
-  static T ParseRow(ptrdiff_t row_ind, PGresult *res) {
-    return overloaded {
-      [=] (std::type_identity<int32_t>) {
-        assert(PQnfields(res) == 1);
-        int32_t ans;
-        std::memcpy(&ans, PQgetvalue(res, row_ind, 0), sizeof(ans));
-        return ans;
-      },
-      [=] (std::type_identity<std::string>) {
-        assert(PQnfields(res) == 1);
-        return std::string(PQgetvalue(res, row_ind, 0));
-      },
-      [=] <typename... Ts> (std::type_identity<std::tuple<Ts...>>) -> T {
-        assert(PQnfields(res) == sizeof...(Ts));
-        T ans;
-        [res, row_ind, &ans] <size_t... Inds> (std::index_sequence<Inds...>) {
-          ([res, row_ind, &ans] <size_t Ind> (std::index_sequence<Ind>) {
-            std::get<Ind>(ans) = overloaded {
-              [res, row_ind] (std::type_identity<int32_t>) {
-                int32_t ans;
-                std::memcpy(&ans, PQgetvalue(res, row_ind, Ind), sizeof(ans));
-                return ans;
-              },
-              [res, row_ind] (std::type_identity<std::string>) {
-                return std::string(PQgetvalue(res, row_ind, Ind));
-              }
-            } (std::type_identity<std::tuple_element_t<Ind, T>>{});
-          } (std::index_sequence<Inds>{}), ...);
-        } (std::make_index_sequence<std::tuple_size_v<T>>{});
-        return ans;
-      }
-    } (std::type_identity<T>{});
-  }
-
-  PGconn *conn_;
-};
-
-struct PipelinedConnection {
-  PipelinedConnection(std::string conn_str)
-    : conn(conn_str),
-      pipe(conn) {}
-
-  Connection conn;
-  Pipelined pipe;
-};
-
-class PostgresEventLoop {
-public:
-  static void Resume() {}
-
-  static void Init() {
-    {
-      std::string conn_str = "host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass";
-      conn.emplace(conn_str.data());
-    }
-
-    spawn([] -> Task<> {
-      while (true) {
-        try {
-          File fd(PQsocket(conn->conn.conn));
-          // co_await SleepFor(std::chrono::milliseconds(10));
-          co_await fd.Poll(true);
-          Unwrap(conn->conn.conn, 1 == PQconsumeInput(conn->conn.conn));
-
-          if (PQisBusy(conn->conn.conn)) {
-              continue;
-          }
-          if (!to_resume.Empty()) {
-            to_resume.Pop().resume();
-          } else {
-            std::cout << ("queue is empty") << std::endl;
-            std::terminate();
-          }
-        } catch (...) {
-          std::terminate();
-        }
-      }
-      co_return;
-    } ());
-  }
-
-  template<typename... Ts>
-  static void IssueRequest(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
-    conn->pipe.Execute(sttmnt, args...);
-  }
-
-  template<typename ResT>
-  struct ReqAwaitable {
-    bool await_ready() const noexcept { return false; }
-
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
-      to_resume.Push(handle);
-    }
-
-    std::vector<ResT> await_resume() const noexcept {
-      return conn->pipe.Recieve<ResT>();
-    }
+    } ()...
   };
+  static constexpr std::array<int, sizeof...(Ts)> format = { std::is_integral_v<std::remove_cvref_t<decltype(args)>>... };
 
-  template<typename... Ts>
-  static Task<PreparedStmnt<Ts...>> Prepare(std::type_identity_t<StmtntString<Ts...>> sttmnt) {
-    auto ans = PreparedStmnt<Ts...>(conn->conn, sttmnt);
-    co_await ReqAwaitable<std::tuple<>>{};
-    co_return ans;
+  std::array<const char*, sizeof...(Ts)> args_ptrs;
+  if constexpr (sizeof...(args) > 0) {
+    [&args_ptrs] <size_t Ind> (this auto self, std::integral_constant<size_t, Ind>, const auto &sep_arg, const auto&... args) {
+      if constexpr (std::is_integral_v<std::remove_cvref_t<decltype(sep_arg)>>) {
+        args_ptrs[Ind] = reinterpret_cast<const char*>(&sep_arg);
+      } else {
+        args_ptrs[Ind] = sep_arg.data();
+      }
+      // args_ptrs[Ind] = overloaded {
+      //    [] (std::integral auto &&sep_arg) { return reinterpret_cast<const char*>(&sep_arg); },
+      //    [] (              auto &&sep_arg) { return sep_arg.data(); }
+      // } (sep_arg);
+      if constexpr (Ind + 1 < sizeof...(Ts)) {
+        self(std::integral_constant<size_t, Ind + 1>{}, args...);
+      }
+    } (std::integral_constant<size_t, 0>{}, args...);
   }
+  internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
+}
 
-  static PGconn *GetConn() {
-    return conn->conn.conn;
+template<typename T>
+T ParseRow(ptrdiff_t row_ind, PGresult *res) {
+  return overloaded {
+    [=] (std::type_identity<int32_t>) {
+      assert(PQnfields(res) == 1);
+      int32_t ans;
+      std::memcpy(&ans, PQgetvalue(res, row_ind, 0), sizeof(ans));
+      return ans;
+    },
+    [=] (std::type_identity<std::string>) {
+      assert(PQnfields(res) == 1);
+      return std::string(PQgetvalue(res, row_ind, 0));
+    },
+    [=] <typename... Ts> (std::type_identity<std::tuple<Ts...>>) -> T {
+      assert(PQnfields(res) == sizeof...(Ts));
+      T ans;
+      [res, row_ind, &ans] <size_t... Inds> (std::index_sequence<Inds...>) {
+        ([res, row_ind, &ans] <size_t Ind> (std::index_sequence<Ind>) {
+          std::get<Ind>(ans) = overloaded {
+            [res, row_ind] (std::type_identity<int32_t>) {
+              int32_t ans;
+              std::memcpy(&ans, PQgetvalue(res, row_ind, Ind), sizeof(ans));
+              return ans;
+            },
+            [res, row_ind] (std::type_identity<std::string>) {
+              return std::string(PQgetvalue(res, row_ind, Ind));
+            }
+          } (std::type_identity<std::tuple_element_t<Ind, T>>{});
+        } (std::index_sequence<Inds>{}), ...);
+      } (std::make_index_sequence<std::tuple_size_v<T>>{});
+      return ans;
+    }
+  } (std::type_identity<T>{});
+}
+
+
+template<typename T>
+static std::vector<T> Parse(PGresult *res) {
+  if (res == nullptr) return {};
+  std::vector<T> ans(PQntuples(res));
+  for (ptrdiff_t ind = 0; ind < ans.size(); ++ind) {
+    ans[ind] = ParseRow<T>(ind, res);
   }
+  return ans;
+}
 
-private:
-  static inline std::optional<PipelinedConnection> conn;
-  static inline Queue<std::coroutine_handle<>> to_resume;
-};
+template<typename T>
+std::vector<T> Recieve(Connection &conn) {
+  std::vector<T> ans;
+  for (PGresPtr res_ptr{ PQgetResult(conn.GetRaw()) }; res_ptr; res_ptr = PGresPtr{ PQgetResult(conn.GetRaw()) }) {
+    switch (PQresultStatus(res_ptr.get())) {
+    case PGRES_TUPLES_OK: {
+      std::ranges::copy(Parse<T>(res_ptr.get()), std::back_inserter(ans));
+      break;
+    }
+    case PGRES_FATAL_ERROR: {
+      Unwrap(conn.GetRaw(), false);
+      break;
+    }
+    default: {
+      // idk
+    }
+    }
+  }
+  return ans;
+}
+} // namespace internal
 
-template<typename ResT, typename... Ts>
-inline Task<std::vector<ResT>> SendPQReq(const PreparedStmnt<Ts...> &sttmnt, const Ts&... args) {
-  PostgresEventLoop::IssueRequest(sttmnt, args...);
-
-  // Unwrap(PostgresEventLoop::GetConn(), 1 == PQsendFlushRequest(PostgresEventLoop::GetConn()));
-  co_await File(PQsocket(PostgresEventLoop::GetConn())).Poll(false);
-  Unwrap(PostgresEventLoop::GetConn(), 1 == PQpipelineSync(PostgresEventLoop::GetConn()));
-  Unwrap(PostgresEventLoop::GetConn(), 0 == PQflush(PostgresEventLoop::GetConn()));
-  co_return co_await PostgresEventLoop::ReqAwaitable<ResT>{};
+template<typename T, typename... Ts>
+Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
+  // co_await File(PQsocket(conn.GetRaw())).Poll(false);
+  internal::Execute(conn, stmnt, args...);
+  // co_await File(PQsocket(conn.GetRaw())).Poll(true);
+  co_return internal::Recieve<T>(conn);
 }

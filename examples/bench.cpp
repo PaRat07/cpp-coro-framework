@@ -29,7 +29,11 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto ProcConn(File connfd, PreparedStmnt<int> &stmnt) -> Task<> {
+auto ProcConn(File connfd) -> Task<> {
+    Connection conn("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass");
+  std::cout << "connected" << std::endl;
+    auto stmnt = PreparedStmnt<int>(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
+  std::cout << "prepared" << std::endl;
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -67,7 +71,7 @@ auto ProcConn(File connfd, PreparedStmnt<int> &stmnt) -> Task<> {
                 int randomNumber;
             };
             DbResp resp;
-            for (auto [ resp_id, resp_num] : co_await SendPQReq<std::tuple<int, int>>(stmnt, std::byteswap(random_id))) {
+            for (auto [ resp_id, resp_num] : co_await Exec<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id))) {
                 resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
@@ -93,15 +97,14 @@ auto ProcConn(File connfd, PreparedStmnt<int> &stmnt) -> Task<> {
 }
 
 MainTask co_server(File fd) {
-  auto sttmnt = co_await PostgresEventLoop::Prepare<int>(R"(SELECT * FROM "world" WHERE id = $1;)");
   std::array<Task<>, 2000> tasks;
   for (auto &i : tasks) {
-    i = [] (File &fd, PreparedStmnt<int> &stmnt) -> Task<> {
+    i = [] (File &fd) -> Task<> {
       while (true) {
-        co_await ProcConn(co_await fd.Accept(), stmnt);
+        co_await ProcConn(co_await fd.Accept());
       }
       co_return;
-    } (fd, sttmnt);
+    } (fd);
   }
   co_await WhenAll(tasks);
   co_return;
@@ -204,7 +207,7 @@ int main() {
     //   } ().RunLoop<IOUringEventLoop>();
     // }
 
-    co_server(fd).RunLoop<TimedEventLoop, IOUringEventLoop, PostgresEventLoop>();
+    co_server(fd).RunLoop<IOUringEventLoop>();
 }
 
 
@@ -214,4 +217,4 @@ int main() {
 // wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 512 --timeout 8 -t 16 "http://localhost:8080/db"
 // wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 32 --timeout 8 -t 1 "http://localhost:8080/db"
 // wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 1 -c 1 --timeout 8 -t 1 "http://localhost:8080/db"
-// curl -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' "http://localhost:8080/db"
+// curl -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,PGRES_COMMAND_OK*/*;q=0.7' -H 'Connection: keep-alive' "http://localhost:8080/db"
