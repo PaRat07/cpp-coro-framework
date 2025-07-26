@@ -31,9 +31,9 @@ struct InvokeOnConstruct {
 
 auto ProcConn(File connfd) -> Task<> {
     Connection conn("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass");
-  std::cout << "connected" << std::endl;
+  // std::cout << "connected" << std::endl;
     auto stmnt = PreparedStmnt<int>(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
-  std::cout << "prepared" << std::endl;
+  // std::cout << "prepared" << std::endl;
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -64,7 +64,7 @@ auto ProcConn(File connfd) -> Task<> {
                                    body);
         }
         else if (req.request_target == "/db") {
-          std::cout << "got db req" << std::endl;
+          // std::cout << "got db req" << std::endl;
             int random_id = rand() % 10'000;
             struct DbResp {
                 int id;
@@ -75,7 +75,7 @@ auto ProcConn(File connfd) -> Task<> {
                 resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
-            fmt::print("body: {}", body);
+            // fmt::print("body: {}", body);
             co_await SendResponse(connfd, resp_buf,
                                   std::array{
                                     std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
