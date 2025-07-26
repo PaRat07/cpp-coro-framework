@@ -213,9 +213,17 @@ static std::vector<T> Parse(PGresult *res) {
 }
 
 template<typename T>
-std::vector<T> Recieve(Connection &conn) {
+Task<std::vector<T>> Recieve(Connection &conn) {
   std::vector<T> ans;
-  for (PGresPtr res_ptr{ PQgetResult(conn.GetRaw()) }; res_ptr; res_ptr = PGresPtr{ PQgetResult(conn.GetRaw()) }) {
+  while (true) {
+    if (PQisBusy(conn.GetRaw())) {
+      co_await File(PQsocket(conn.GetRaw())).Poll(true);
+      PQconsumeInput(conn.GetRaw());
+    } else {
+      break;
+    }
+  }
+  while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
     switch (PQresultStatus(res_ptr.get())) {
     case PGRES_TUPLES_OK: {
       std::ranges::copy(Parse<T>(res_ptr.get()), std::back_inserter(ans));
@@ -230,14 +238,13 @@ std::vector<T> Recieve(Connection &conn) {
     }
     }
   }
-  return ans;
+  co_return ans;
 }
 } // namespace internal
 
 template<typename T, typename... Ts>
 Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
-  // co_await File(PQsocket(conn.GetRaw())).Poll(false);
+  co_await File(PQsocket(conn.GetRaw())).Poll(false);
   internal::Execute(conn, stmnt, args...);
-  // co_await File(PQsocket(conn.GetRaw())).Poll(true);
-  co_return internal::Recieve<T>(conn);
+  co_return co_await internal::Recieve<T>(conn);
 }
