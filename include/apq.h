@@ -36,10 +36,26 @@ void Unwrap(PGconn *conn, bool res) {
 
 struct Connection {
 public:
-  Connection(std::string init_state) {
-    conn = PQconnectdb(init_state.data());
-    internal::Unwrap(conn, PQstatus(conn) == CONNECTION_OK);
-    internal::Unwrap(conn, 0 == PQsetnonblocking(conn, 1));
+
+  static Task<Connection> Create(std::string init_state) {
+    PGconn *conn = PQconnectStart(init_state.data());
+    internal::Unwrap(conn, conn && PQstatus(conn) != CONNECTION_BAD);
+
+    // Wait until connection is complete
+    PostgresPollingStatusType poll_status;
+    int sock = PQsocket(conn);
+    internal::Unwrap(conn, sock >= 0);
+
+    while ((poll_status = PQconnectPoll(conn)) != PGRES_POLLING_OK) {
+      if (poll_status == PGRES_POLLING_READING) {
+        co_await File(sock).Poll(true);
+      } else if (poll_status == PGRES_POLLING_WRITING) {
+        co_await File(sock).Poll(false);
+      } else {
+        internal::Unwrap(conn, false);
+      }
+    }
+    co_return Connection{ conn };
   }
 
   PGconn *GetRaw() {
@@ -48,6 +64,10 @@ public:
 
 private:
   PGconn *conn;
+
+  Connection(PGconn *c) {
+    conn = c;
+  }
 };
 
 
@@ -110,14 +130,24 @@ static size_t sttmnt_cnt = 0;
 template<typename... Ts>
 class PreparedStmnt {
 public:
-  PreparedStmnt(Connection &conn, StmtntString<Ts...> stmnt) : name_(fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++)) {
+  static Task<PreparedStmnt> Create(Connection &conn, StmtntString<Ts...> stmnt) {
+    std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
-    internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name_.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
+    internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
+    while (true) {
+      if (PQisBusy(conn.GetRaw())) {
+        co_await File(PQsocket(conn.GetRaw())).Poll(true);
+        PQconsumeInput(conn.GetRaw());
+      } else {
+        break;
+      }
+    }
     {
       PGresPtr resp{PQgetResult(conn.GetRaw())};
       assert(PQresultStatus(resp.get()) == PGRES_COMMAND_OK);
     }
     assert(!PQgetResult(conn.GetRaw()));
+    co_return PreparedStmnt(std::move(name));
   }
 
   std::string_view GetName() const {
@@ -126,6 +156,9 @@ public:
 
 private:
   std::string name_;
+
+  PreparedStmnt(std::string name) : name_(std::move(name)) {
+  }
 };
 
 

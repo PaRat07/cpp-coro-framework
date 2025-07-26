@@ -30,10 +30,8 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 auto ProcConn(File connfd) -> Task<> {
-    Connection conn("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass");
-  // std::cout << "connected" << std::endl;
-    auto stmnt = PreparedStmnt<int>(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
-  // std::cout << "prepared" << std::endl;
+    auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass");
+    auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -75,7 +73,6 @@ auto ProcConn(File connfd) -> Task<> {
                 resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
-            // fmt::print("body: {}", body);
             co_await SendResponse(connfd, resp_buf,
                                   std::array{
                                     std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
@@ -89,9 +86,7 @@ auto ProcConn(File connfd) -> Task<> {
         }
       }
     } catch (const std::exception &exc) {
-
-      // fmt::println("failed");
-      std::cerr << exc.what() << std::endl;
+      std::cerr << "Request error: " << exc.what() << std::endl;
     }
     co_return;
 }
