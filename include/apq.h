@@ -41,7 +41,7 @@ private:
     bool alive = true;
     BinarySemaphore buf_empty;
     // size_t buf_sz = 0;
-    Queue<std::coroutine_handle<>> to_resume;
+    AsyncQueue<std::coroutine_handle<>> to_resume;
   };
 public:
 
@@ -89,7 +89,7 @@ public:
           }
           internal::Unwrap(conn, 1 == PQconsumeInput(conn));
         } while (PQisBusy(conn));
-        auto coro = sh_data->to_resume.Pop();
+        auto coro = co_await sh_data->to_resume.Pop();
         coro.resume();
       }
     } (conn, res_conn.sh_data));
