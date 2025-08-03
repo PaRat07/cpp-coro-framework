@@ -34,36 +34,86 @@ void Unwrap(PGconn *conn, bool res) {
 }
 } // namespace internal
 
+// if connection breaks it's ub
 struct Connection {
+private:
+  struct ConnData {
+    bool alive = true;
+    BinarySemaphore buf_empty;
+    // size_t buf_sz = 0;
+    Queue<std::coroutine_handle<>> to_resume;
+  };
 public:
 
+  Connection(const Connection&) = delete;
+  Connection(Connection&&) = default;
+
   static Task<Connection> Create(std::string init_state) {
-    PGconn *conn = PQconnectStart(init_state.data());
-    internal::Unwrap(conn, conn && PQstatus(conn) != CONNECTION_BAD);
+    PGconn *conn = PQconnectdb(init_state.data());
+    internal::Unwrap(conn, 0 == PQsetnonblocking(conn, 1));
+    internal::Unwrap(conn, 1 == PQenterPipelineMode(conn));
 
-    // Wait until connection is complete
-    PostgresPollingStatusType poll_status;
-    int sock = PQsocket(conn);
-    internal::Unwrap(conn, sock >= 0);
+    auto res_conn = Connection{ conn };
 
-    while ((poll_status = PQconnectPoll(conn)) != PGRES_POLLING_OK) {
-      if (poll_status == PGRES_POLLING_READING) {
-        co_await File(sock).Poll(true);
-      } else if (poll_status == PGRES_POLLING_WRITING) {
-        co_await File(sock).Poll(false);
-      } else {
-        internal::Unwrap(conn, false);
+    // writer
+    spawn([] (PGconn *conn, std::shared_ptr<ConnData> sh_data) static -> Task<> {
+      File sock{ PQsocket(conn) };
+      while (true) {
+        co_await sh_data->buf_empty.Acquire();
+        if (!sh_data->alive) {
+          co_return;
+        }
+        co_await SleepFor(std::chrono::milliseconds(1));
+        if (!sh_data->alive) {
+          co_return;
+        }
+        int flush_res = 1;
+        while (flush_res == 1) {
+          co_await sock.Poll(false);
+          if (!sh_data->alive) {
+            co_return;
+          }
+          flush_res = PQflush(conn);
+        }
       }
-    }
-    co_return Connection{ conn };
+    } (conn, res_conn.sh_data));
+
+    // reader
+    spawn([] (PGconn *conn, decltype(sh_data) sh_data) -> Task<> {
+      File sock{ PQsocket(conn) };
+      while (true) {
+        do {
+          co_await SleepFor(std::chrono::milliseconds(200));
+          if (!sh_data->alive) {
+            co_return;
+          }
+          internal::Unwrap(conn, 1 == PQconsumeInput(conn));
+        } while (PQisBusy(conn));
+        auto coro = sh_data->to_resume.Pop();
+        coro.resume();
+      }
+    } (conn, res_conn.sh_data));
+    co_return res_conn;
+  }
+
+  ~Connection() {
+    if (sh_data)
+      sh_data->alive = false;
   }
 
   PGconn *GetRaw() {
     return conn;
   }
 
+  void AddSuspended(std::coroutine_handle<> handle) {
+    sh_data->to_resume.Push(handle);
+    sh_data->buf_empty.Release();
+  }
+
 private:
   PGconn *conn;
+  // conn creation is slow, but idgaf
+  std::shared_ptr<ConnData> sh_data = std::make_unique<ConnData>();
 
   Connection(PGconn *c) {
     conn = c;
@@ -124,80 +174,9 @@ struct OidVal<std::string_view> : std::integral_constant<Oid, 25> {};
 
 
 static size_t sttmnt_cnt = 0;
-} // namespace internal
 
 
-template<typename... Ts>
-class PreparedStmnt {
-public:
-  static Task<PreparedStmnt> Create(Connection &conn, StmtntString<Ts...> stmnt) {
-    std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
-    static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
-    internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    while (true) {
-      if (PQisBusy(conn.GetRaw())) {
-        co_await File(PQsocket(conn.GetRaw())).Poll(true);
-        PQconsumeInput(conn.GetRaw());
-      } else {
-        break;
-      }
-    }
-    {
-      PGresPtr resp{PQgetResult(conn.GetRaw())};
-      assert(PQresultStatus(resp.get()) == PGRES_COMMAND_OK);
-    }
-    assert(!PQgetResult(conn.GetRaw()));
-    co_return PreparedStmnt(std::move(name));
-  }
 
-  std::string_view GetName() const {
-    return name_;
-  }
-
-private:
-  std::string name_;
-
-  PreparedStmnt(std::string name) : name_(std::move(name)) {
-  }
-};
-
-
-namespace internal {
-// numbers must be in big endian because idgaf
-template<typename... Ts>
-void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
-  static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
-  static constexpr std::array<int, sizeof...(Ts)> szs = {
-    [&] {
-      using ArgT = std::remove_cvref_t<decltype(args)>;
-      if constexpr (!std::is_integral_v<ArgT>) {
-        return args.size();
-      } else {
-        return sizeof(ArgT);
-      }
-    } ()...
-  };
-  static constexpr std::array<int, sizeof...(Ts)> format = { std::is_integral_v<std::remove_cvref_t<decltype(args)>>... };
-
-  std::array<const char*, sizeof...(Ts)> args_ptrs;
-  if constexpr (sizeof...(args) > 0) {
-    [&args_ptrs] <size_t Ind> (this auto self, std::integral_constant<size_t, Ind>, const auto &sep_arg, const auto&... args) {
-      if constexpr (std::is_integral_v<std::remove_cvref_t<decltype(sep_arg)>>) {
-        args_ptrs[Ind] = reinterpret_cast<const char*>(&sep_arg);
-      } else {
-        args_ptrs[Ind] = sep_arg.data();
-      }
-      // args_ptrs[Ind] = overloaded {
-      //    [] (std::integral auto &&sep_arg) { return reinterpret_cast<const char*>(&sep_arg); },
-      //    [] (              auto &&sep_arg) { return sep_arg.data(); }
-      // } (sep_arg);
-      if constexpr (Ind + 1 < sizeof...(Ts)) {
-        self(std::integral_constant<size_t, Ind + 1>{}, args...);
-      }
-    } (std::integral_constant<size_t, 0>{}, args...);
-  }
-  internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
-}
 
 template<typename T>
 T ParseRow(ptrdiff_t row_ind, PGresult *res) {
@@ -248,14 +227,11 @@ static std::vector<T> Parse(PGresult *res) {
 template<typename T>
 Task<std::vector<T>> Recieve(Connection &conn) {
   std::vector<T> ans;
-  while (true) {
-    if (PQisBusy(conn.GetRaw())) {
-      co_await File(PQsocket(conn.GetRaw())).Poll(true);
-      PQconsumeInput(conn.GetRaw());
-    } else {
-      break;
+  co_await InvokeWithHandle{
+    [&conn] (std::coroutine_handle<> handle) {
+      conn.AddSuspended(handle);
     }
-  }
+  };
   while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
     switch (PQresultStatus(res_ptr.get())) {
     case PGRES_TUPLES_OK: {
@@ -275,9 +251,101 @@ Task<std::vector<T>> Recieve(Connection &conn) {
 }
 } // namespace internal
 
+
+template<typename... Ts>
+class PreparedStmnt {
+public:
+  static Task<PreparedStmnt> Create(Connection &conn, StmtntString<Ts...> stmnt) {
+    std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
+    static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
+    internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
+    // FIXME
+    internal::Unwrap(conn.GetRaw(), PQpipelineSync(conn.GetRaw()));
+    co_await internal::Recieve<std::tuple<>>(conn);
+    // FIXME
+    std::cerr << "recieved" << std::endl;
+    co_return PreparedStmnt(std::move(name));
+  }
+
+  std::string_view GetName() const {
+    return name_;
+  }
+
+private:
+  std::string name_;
+
+  PreparedStmnt(std::string name) : name_(std::move(name)) {
+  }
+};
+
+
+namespace internal {
+// numbers must be in big endian because idgaf
+template<typename... Ts>
+void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
+  static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
+  static constexpr std::array<int, sizeof...(Ts)> szs = {
+    [&] {
+      using ArgT = std::remove_cvref_t<decltype(args)>;
+      if constexpr (!std::is_integral_v<ArgT>) {
+        return args.size();
+      } else {
+        return sizeof(ArgT);
+      }
+    } ()...
+  };
+  static constexpr std::array<int, sizeof...(Ts)> format = { std::is_integral_v<std::remove_cvref_t<decltype(args)>>... };
+
+  std::array<const char*, sizeof...(Ts)> args_ptrs;
+  if constexpr (sizeof...(args) > 0) {
+    [&args_ptrs] <size_t Ind> (this auto self, std::integral_constant<size_t, Ind>, const auto &sep_arg, const auto&... args) {
+      if constexpr (std::is_integral_v<std::remove_cvref_t<decltype(sep_arg)>>) {
+        args_ptrs[Ind] = reinterpret_cast<const char*>(&sep_arg);
+      } else {
+        args_ptrs[Ind] = sep_arg.data();
+      }
+      // args_ptrs[Ind] = overloaded {
+      //    [] (std::integral auto &&sep_arg) { return reinterpret_cast<const char*>(&sep_arg); },
+      //    [] (              auto &&sep_arg) { return sep_arg.data(); }
+      // } (sep_arg);
+      if constexpr (Ind + 1 < sizeof...(Ts)) {
+        self(std::integral_constant<size_t, Ind + 1>{}, args...);
+      }
+    } (std::integral_constant<size_t, 0>{}, args...);
+  }
+  internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
+  // FIXME
+  internal::Unwrap(conn.GetRaw(), PQpipelineSync(conn.GetRaw()));
+}
+} // namespace internal
+
 template<typename T, typename... Ts>
 Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
   co_await File(PQsocket(conn.GetRaw())).Poll(false);
   internal::Execute(conn, stmnt, args...);
   co_return co_await internal::Recieve<T>(conn);
 }
+
+
+
+class PostgresEventLoop {
+public:
+  static void Resume() {
+    for (auto *i : conns_) {
+      PQpipelineSync(i);
+    }
+  }
+
+  static void Init() {}
+
+  static void RegisterConn(PGconn *conn) {
+    conns_.push_back(conn);
+  }
+
+  static void UnregisterConn(PGconn *conn) {
+    conns_.erase(std::find(conns_.begin(), conns_.end(), conn));
+  }
+
+private:
+  static std::vector<PGconn*> conns_;
+};

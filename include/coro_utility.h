@@ -110,6 +110,56 @@ template <typename Awaitable>
 auto spawn(Awaitable awaitable) -> void {
     [] (Awaitable awaitable) static -> spawn_task {
         co_await awaitable;
-    } (std::forward<Awaitable&&>(awaitable));
+    } (std::move(awaitable));
 }
 
+struct WriteHandle {
+  bool await_ready() const noexcept { return false; }
+
+  void await_suspend(std::coroutine_handle<> handle) noexcept {
+    to_write = handle;
+  }
+
+  void await_resume() const noexcept {}
+
+  std::coroutine_handle<> &to_write;
+};
+
+template<typename T>
+struct InvokeWithHandle {
+  bool await_ready() const noexcept { return false; }
+
+  void await_suspend(std::coroutine_handle<> handle) noexcept {
+    func(handle);
+  }
+
+  void await_resume() const noexcept {}
+
+  T func;
+};
+
+struct BinarySemaphore {
+  void Release() {
+    locked = false;
+    if (handle) {
+      std::exchange(handle, {}).resume();
+    }
+  }
+  Task<> Acquire() {
+    if (!locked) {
+      locked = true;
+      co_return;
+    } else if (handle) {
+      [] noexcept {
+        throw std::runtime_error("cant Acquire multiple coros on same BinarySemaphore");
+      } ();
+    }
+    co_await WriteHandle{handle};
+    locked = true;
+    co_return;
+  }
+
+
+  std::coroutine_handle<> handle;
+  bool locked = true;
+};
