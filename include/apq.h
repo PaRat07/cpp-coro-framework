@@ -83,7 +83,7 @@ public:
       File sock{ PQsocket(conn) };
       while (true) {
         do {
-          co_await SleepFor(std::chrono::milliseconds(200));
+          co_await sock.Poll(true);
           if (!sh_data->alive) {
             co_return;
           }
@@ -259,11 +259,8 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    // FIXME
-    internal::Unwrap(conn.GetRaw(), PQpipelineSync(conn.GetRaw()));
+    internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
     co_await internal::Recieve<std::tuple<>>(conn);
-    // FIXME
-    std::cerr << "recieved" << std::endl;
     co_return PreparedStmnt(std::move(name));
   }
 
@@ -314,8 +311,7 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
     } (std::integral_constant<size_t, 0>{}, args...);
   }
   internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
-  // FIXME
-  internal::Unwrap(conn.GetRaw(), PQpipelineSync(conn.GetRaw()));
+  internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
 }
 } // namespace internal
 
