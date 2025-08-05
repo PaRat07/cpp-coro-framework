@@ -282,7 +282,7 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    internal::Unwrap(conn.GetRaw(), PQpipelineSync(conn.GetRaw()));
+    internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
     co_await internal::Recieve<std::tuple<>>(conn);
     co_return PreparedStmnt(std::move(name));
   }
