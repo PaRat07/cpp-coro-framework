@@ -67,6 +67,7 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
                 int randomNumber;
             };
             DbResp resp;
+            // co_await SleepFor(std::chrono::milliseconds(50));
             for (auto [ resp_id, resp_num] : co_await Exec<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id))) {
                 resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
@@ -189,7 +190,7 @@ int main() {
     }
 
     // fork_workers();
-    // fork();fork();fork();fork();
+     //fork();fork();fork();fork();
 
     // while (true) {
     //   int connfd;
@@ -202,7 +203,7 @@ int main() {
     //   } ().RunLoop<IOUringEventLoop>();
     // }
 
-    co_server(fd).RunLoop<IOUringEventLoop, TimedEventLoop>();
+    co_server(fd).RunLoop<IOUringEventLoop, OncePerCycleEventLoop, TimedEventLoop>();
 }
 
 

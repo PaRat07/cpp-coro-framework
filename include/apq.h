@@ -20,6 +20,19 @@
 #include "sys_utility.h"
 #include "task.h"
 #include "timed_event_loop.h"
+
+struct OncePerCycleEventLoop {
+  static void Init() noexcept {}
+
+  static void Resume() noexcept {
+    while (!queue_.Empty()) {
+      queue_.Pop().resume();
+    }
+  }
+
+  static inline Queue<std::coroutine_handle<>> queue_;
+};
+
 namespace internal {
 void Unwrap(PGconn *conn, PGresult *res) {
   if (PQresultStatus(res) != PGRES_COMMAND_OK) [[unlikely]] {
@@ -40,7 +53,6 @@ private:
   struct ConnData {
     bool alive = true;
     BinarySemaphore buf_empty;
-    // size_t buf_sz = 0;
     AsyncQueue<std::coroutine_handle<>> to_resume;
   };
 public:
@@ -57,40 +69,50 @@ public:
 
     // writer
     spawn([] (PGconn *conn, std::shared_ptr<ConnData> sh_data) static -> Task<> {
-      File sock{ PQsocket(conn) };
-      while (true) {
-        co_await sh_data->buf_empty.Acquire();
-        if (!sh_data->alive) {
-          co_return;
-        }
-        co_await SleepFor(std::chrono::milliseconds(1));
-        if (!sh_data->alive) {
-          co_return;
-        }
-        int flush_res = 1;
-        while (flush_res == 1) {
-          co_await sock.Poll(false);
+      try {
+        File sock{ PQsocket(conn) };
+        while (true) {
+          co_await sh_data->buf_empty.Acquire();
           if (!sh_data->alive) {
             co_return;
           }
-          flush_res = PQflush(conn);
+          co_await InvokeWithHandle{
+            [] (std::coroutine_handle<> handle) { OncePerCycleEventLoop::queue_.Push(handle); }
+          };
+          if (!sh_data->alive) {
+            co_return;
+          }
+          int flush_res = 1;
+          while (flush_res == 1) {
+            co_await sock.Poll(false);
+            if (!sh_data->alive) {
+              co_return;
+            }
+            flush_res = PQflush(conn);
+          }
         }
+      } catch (const std::exception &exc) {
+        std::cerr << "APQ WRITER ERROR: " << exc.what() << std::endl;
       }
     } (conn, res_conn.sh_data));
 
     // reader
     spawn([] (PGconn *conn, decltype(sh_data) sh_data) -> Task<> {
-      File sock{ PQsocket(conn) };
-      while (true) {
-        do {
-          co_await sock.Poll(true);
-          if (!sh_data->alive) {
-            co_return;
+      try {
+        File sock{ PQsocket(conn) };
+        while (true) {
+           while (PQisBusy(conn)) {
+            co_await sock.Poll(true);
+            if (!sh_data->alive) {
+              co_return;
+            }
+            internal::Unwrap(conn, 1 == PQconsumeInput(conn));
           }
-          internal::Unwrap(conn, 1 == PQconsumeInput(conn));
-        } while (PQisBusy(conn));
-        auto coro = co_await sh_data->to_resume.Pop();
-        coro.resume();
+          auto coro = co_await sh_data->to_resume.Pop();
+          coro.resume();
+        }
+      } catch (const std::exception &exc) {
+        std::cerr << "APQ READER ERROR: " << exc.what() << std::endl;
       }
     } (conn, res_conn.sh_data));
     co_return res_conn;
@@ -238,6 +260,7 @@ Task<std::vector<T>> Recieve(Connection &conn) {
       std::ranges::copy(Parse<T>(res_ptr.get()), std::back_inserter(ans));
       break;
     }
+    case PGRES_PIPELINE_ABORTED:
     case PGRES_FATAL_ERROR: {
       Unwrap(conn.GetRaw(), false);
       break;
@@ -259,7 +282,7 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
+    internal::Unwrap(conn.GetRaw(), PQpipelineSync(conn.GetRaw()));
     co_await internal::Recieve<std::tuple<>>(conn);
     co_return PreparedStmnt(std::move(name));
   }
@@ -321,27 +344,3 @@ Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const T
   internal::Execute(conn, stmnt, args...);
   co_return co_await internal::Recieve<T>(conn);
 }
-
-
-
-class PostgresEventLoop {
-public:
-  static void Resume() {
-    for (auto *i : conns_) {
-      PQpipelineSync(i);
-    }
-  }
-
-  static void Init() {}
-
-  static void RegisterConn(PGconn *conn) {
-    conns_.push_back(conn);
-  }
-
-  static void UnregisterConn(PGconn *conn) {
-    conns_.erase(std::find(conns_.begin(), conns_.end(), conn));
-  }
-
-private:
-  static std::vector<PGconn*> conns_;
-};
