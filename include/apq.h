@@ -11,6 +11,7 @@
 #include <queue>
 #include <ranges>
 #include <span>
+#include <stack>
 #include <string>
 
 #include "coro_utility.h"
@@ -217,6 +218,9 @@ Task<std::vector<T>> Recieve(Connection &conn) {
 template<typename... Ts>
 class PreparedStmnt {
 public:
+  // valueless
+  PreparedStmnt() = default;
+
   static Task<PreparedStmnt> Create(Connection &conn, StmtntString<Ts...> stmnt) {
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
@@ -284,3 +288,4 @@ Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const T
   internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
   co_return co_await internal::Recieve<T>(conn);
 }
+

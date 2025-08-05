@@ -21,7 +21,7 @@ public:
         }
 
         void unhandled_exception() noexcept {
-            exc_ptr = std::current_exception();
+          std::terminate();
         }
 
         void* operator new(std::size_t n) {

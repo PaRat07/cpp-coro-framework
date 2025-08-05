@@ -67,7 +67,7 @@ public:
             return {};
         }
 
-        Result GetResult() {
+        Result &&GetResult() {
             return std::move(result).visit(overloaded {
                 [] (Result &&res)               -> Result&& { return res; },
                 [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); },
@@ -92,7 +92,8 @@ public:
             }
         }
 
-        Result await_resume() requires(!std::is_same_v<Result, void>) {
+        template<typename RetT = Result> requires(!std::is_same_v<RetT, void>)
+        RetT &&await_resume() {
             return std::move(handle.promise().result).visit(overloaded {
                 [] (Result &&res)               -> Result&& { return res; },
                 [] (std::exception_ptr exc_ptr) -> Result&& { std::rethrow_exception(exc_ptr); },

@@ -29,9 +29,7 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto ProcConn(File connfd) -> Task<> {
-    auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
-    auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
+auto ProcConn(File connfd, Leaser<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -70,7 +68,12 @@ auto ProcConn(File connfd) -> Task<> {
             };
             DbResp resp;
             // co_await SleepFor(std::chrono::milliseconds(50));
-            for (auto [ resp_id, resp_num] : co_await Exec<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id))) {
+            std::vector<std::tuple<int, int>> resp_vec;
+            {
+              auto conn_guard = std::move(co_await conn_leaser.Lease());
+              resp_vec = co_await Exec<std::tuple<int, int>>(conn_guard.Get(), stmnt, std::byteswap(random_id));
+            }
+            for (auto [ resp_id, resp_num] : resp_vec) {
                 resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
@@ -94,17 +97,24 @@ auto ProcConn(File connfd) -> Task<> {
 
 MainTask co_server(File fd) {
   std::array<Task<>, 2000> tasks;
+  auto conn_leaser = Leaser(co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable"));
+  PreparedStmnt<int> stmnt;
+  {
+    auto leased_conn = co_await conn_leaser.Lease();
+    stmnt = co_await decltype(stmnt)::Create(leased_conn.Get(), R"(SELECT * FROM "world" WHERE id = $1;)");
+  }
+
   for (auto &i : tasks) {
-    i = [] (File &fd) -> Task<> {
+    i = [] (File &fd, Leaser<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
       try {
         while (true) {
-          co_await ProcConn(co_await fd.Accept());
+          co_await ProcConn(co_await fd.Accept(), conn_leaser, stmnt);
         }
       } catch (std::exception &exc) {
         std::cerr << exc.what() << std::endl;
       }
       co_return;
-    } (fd);
+    } (fd, conn_leaser, stmnt);
   }
   co_await WhenAll(tasks);
   co_return;

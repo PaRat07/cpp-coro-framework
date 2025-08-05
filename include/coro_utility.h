@@ -1,6 +1,8 @@
 #pragma once
 
 #include <coroutine>
+#include <stack>
+#include <vector>
 
 #include "task.h"
 
@@ -109,7 +111,13 @@ Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) 
 template <typename Awaitable>
 auto spawn(Awaitable awaitable) -> void {
     [] (Awaitable awaitable) static -> spawn_task {
-        co_await awaitable;
+        try {
+          co_await awaitable;
+        } catch (const std::exception &exc) {
+          std::cerr << "Thrown out of spawned coro: " << exc.what() << std::endl;
+        } catch (...) {
+          std::cerr << "Thrown out of spawned coro: <unknow exception type>" << std::endl;
+        }
     } (std::move(awaitable));
 }
 
@@ -162,4 +170,61 @@ struct BinarySemaphore {
 
   std::coroutine_handle<> handle;
   bool locked = true;
+};
+
+template<typename T>
+struct Leaser {
+private:
+  std::stack<std::coroutine_handle<>, std::vector<std::coroutine_handle<>>> tasks_;
+  T val;
+  bool owned = false;
+
+public:
+  Leaser(T obj) : val(std::move(obj)) {}
+
+  struct LeasingGuard {
+  public:
+    using LeaserGuardImpl = std::unique_ptr<Leaser, decltype([] (Leaser *leaser) {})>;
+    explicit LeasingGuard(Leaser &leaser) {
+      leaser_ = LeaserGuardImpl{ &leaser };
+    }
+
+    LeasingGuard(LeasingGuard&&) = default;
+    LeasingGuard &operator=(LeasingGuard&&) = default;
+
+
+    T &Get() {
+      return leaser_->val;
+    }
+
+    bool valueless_after_move() {
+      return !leaser_;
+    }
+
+    ~LeasingGuard() {
+      if (!leaser_) return;
+      if (!leaser_->tasks_.empty()) {
+        auto hand = leaser_->tasks_.top();
+        leaser_->tasks_.pop();
+        hand.resume();
+      } else {
+        leaser_->owned = false;
+      }
+    }
+
+    friend struct Leaser;
+  private:
+    LeaserGuardImpl leaser_;
+  };
+
+  Task<LeasingGuard> Lease() {
+    if (owned) {
+      co_await InvokeWithHandle {
+        [this] (std::coroutine_handle<> hand) { tasks_.push(hand); }
+      };
+    } else {
+      owned = true;
+    }
+    co_return LeasingGuard(*this);
+  }
 };
