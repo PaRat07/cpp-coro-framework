@@ -284,8 +284,9 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
 template<typename T, typename... Ts>
 Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
   internal::Execute(conn, stmnt, args...);
-  co_await File(PQsocket(conn.GetRaw())).Poll(false);
-  internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
+  while (1 == PQflush(conn.GetRaw())) {
+    co_await File(PQsocket(conn.GetRaw())).Poll(false);
+  }
   co_return co_await internal::Recieve<T>(conn);
 }
 

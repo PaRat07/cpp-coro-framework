@@ -17,7 +17,7 @@ public:
     if (cnt == cont.size()) [[unlikely]] {
       std::vector<T> new_cont(cont.size() * 2 + 1);
       std::copy(cont.begin() + beg, cont.end(), new_cont.begin());
-      std::copy(cont.begin(), cont.begin() + beg, new_cont.begin() + beg);
+      std::copy(cont.begin(), cont.begin() + beg, new_cont.begin() + (cont.size() - beg));
       std::swap(cont, new_cont);
       beg = 0;
     }
