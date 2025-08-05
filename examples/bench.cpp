@@ -29,7 +29,9 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
+auto ProcConn(File connfd) -> Task<> {
+    auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
+    auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -92,15 +94,17 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
 
 MainTask co_server(File fd) {
   std::array<Task<>, 2000> tasks;
-  auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
-  auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
   for (auto &i : tasks) {
-    i = [] (File &fd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
-      while (true) {
-        co_await ProcConn(co_await fd.Accept(), conn, stmnt);
+    i = [] (File &fd) -> Task<> {
+      try {
+        while (true) {
+          co_await ProcConn(co_await fd.Accept());
+        }
+      } catch (std::exception &exc) {
+        std::cerr << exc.what() << std::endl;
       }
       co_return;
-    } (fd, conn, stmnt);
+    } (fd);
   }
   co_await WhenAll(tasks);
   co_return;

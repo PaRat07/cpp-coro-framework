@@ -45,98 +45,43 @@ void Unwrap(PGconn *conn, bool res) {
     throw std::runtime_error(fmt::format("Unwrap failed: {}", PQerrorMessage(conn)));
   }
 }
+
+
+Task<> ConsumeInput(PGconn *conn) {
+  File file{PQsocket(conn)};
+  while (PQisBusy(conn)) {
+    co_await file.Poll(true);
+    PQconsumeInput(conn);
+  }
+  co_return;
+}
+
 } // namespace internal
 
-// if connection breaks it's ub
 struct Connection {
-private:
-  struct ConnData {
-    bool alive = true;
-    BinarySemaphore buf_empty;
-    AsyncQueue<std::coroutine_handle<>> to_resume;
-  };
 public:
+  using ConnPtr = std::unique_ptr<PGconn, decltype([] (PGconn *conn) { PQfinish(conn); })>;
 
-  Connection(const Connection&) = delete;
-  Connection(Connection&&) = default;
 
   static Task<Connection> Create(std::string init_state) {
-    PGconn *conn = PQconnectdb(init_state.data());
-    internal::Unwrap(conn, 0 == PQsetnonblocking(conn, 1));
-    internal::Unwrap(conn, 1 == PQenterPipelineMode(conn));
+    // TODO make async
+    auto conn = ConnPtr(PQconnectdb(init_state.data()));
+    internal::Unwrap(conn.get(), 0 == PQsetnonblocking(conn.get(), 1));
 
-    auto res_conn = Connection{ conn };
+    auto res_conn = Connection{ std::move(conn) };
 
-    // writer
-    spawn([] (PGconn *conn, std::shared_ptr<ConnData> sh_data) static -> Task<> {
-      try {
-        File sock{ PQsocket(conn) };
-        while (true) {
-          co_await sh_data->buf_empty.Acquire();
-          if (!sh_data->alive) {
-            co_return;
-          }
-          co_await InvokeWithHandle{
-            [] (std::coroutine_handle<> handle) { OncePerCycleEventLoop::queue_.Push(handle); }
-          };
-          if (!sh_data->alive) {
-            co_return;
-          }
-          int flush_res = 1;
-          while (flush_res == 1) {
-            co_await sock.Poll(false);
-            if (!sh_data->alive) {
-              co_return;
-            }
-            flush_res = PQflush(conn);
-          }
-        }
-      } catch (const std::exception &exc) {
-        std::cerr << "APQ WRITER ERROR: " << exc.what() << std::endl;
-      }
-    } (conn, res_conn.sh_data));
-
-    // reader
-    spawn([] (PGconn *conn, decltype(sh_data) sh_data) -> Task<> {
-      try {
-        File sock{ PQsocket(conn) };
-        while (true) {
-          co_await sock.Poll(true);
-          internal::Unwrap(conn, 1 == PQconsumeInput(conn));
-          PQflush(conn);
-          while (!PQisBusy(conn)) {
-            auto coro = co_await sh_data->to_resume.Pop();
-            coro.resume();
-          }
-        }
-      } catch (const std::exception &exc) {
-        std::cerr << "APQ READER ERROR: " << exc.what() << std::endl;
-      }
-    } (conn, res_conn.sh_data));
     co_return res_conn;
   }
 
-  ~Connection() {
-    if (sh_data)
-      sh_data->alive = false;
-  }
-
   PGconn *GetRaw() {
-    return conn;
-  }
-
-  void AddSuspended(std::coroutine_handle<> handle) {
-    sh_data->to_resume.Push(handle);
-    sh_data->buf_empty.Release();
+    return conn.get();
   }
 
 private:
-  PGconn *conn;
-  // conn creation is slow, but idgaf
-  std::shared_ptr<ConnData> sh_data = std::make_unique<ConnData>();
+  ConnPtr conn;
 
-  Connection(PGconn *c) {
-    conn = c;
+  Connection(ConnPtr conn_ptr) {
+    conn = std::move(conn_ptr);
   }
 };
 
@@ -246,12 +191,8 @@ static std::vector<T> Parse(PGresult *res) {
 
 template<typename T>
 Task<std::vector<T>> Recieve(Connection &conn) {
+  co_await internal::ConsumeInput(conn.GetRaw());
   std::vector<T> ans;
-  co_await InvokeWithHandle{
-    [&conn] (std::coroutine_handle<> handle) {
-      conn.AddSuspended(handle);
-    }
-  };
   while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
     switch (PQresultStatus(res_ptr.get())) {
     case PGRES_TUPLES_OK: {
@@ -280,7 +221,8 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-    internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
+    co_await File(PQsocket(conn.GetRaw())).Poll(false);
+    internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
     co_await internal::Recieve<std::tuple<>>(conn);
     co_return PreparedStmnt(std::move(name));
   }
@@ -332,13 +274,13 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
     } (std::integral_constant<size_t, 0>{}, args...);
   }
   internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
-  internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
 }
 } // namespace internal
 
 template<typename T, typename... Ts>
 Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
-  co_await File(PQsocket(conn.GetRaw())).Poll(false);
   internal::Execute(conn, stmnt, args...);
+  co_await File(PQsocket(conn.GetRaw())).Poll(false);
+  internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
   co_return co_await internal::Recieve<T>(conn);
 }
