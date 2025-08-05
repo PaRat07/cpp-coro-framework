@@ -101,15 +101,13 @@ public:
       try {
         File sock{ PQsocket(conn) };
         while (true) {
-           while (PQisBusy(conn)) {
-            co_await sock.Poll(true);
-            if (!sh_data->alive) {
-              co_return;
-            }
-            internal::Unwrap(conn, 1 == PQconsumeInput(conn));
+          co_await sock.Poll(true);
+          internal::Unwrap(conn, 1 == PQconsumeInput(conn));
+          PQflush(conn);
+          while (!PQisBusy(conn)) {
+            auto coro = co_await sh_data->to_resume.Pop();
+            coro.resume();
           }
-          auto coro = co_await sh_data->to_resume.Pop();
-          coro.resume();
         }
       } catch (const std::exception &exc) {
         std::cerr << "APQ READER ERROR: " << exc.what() << std::endl;
