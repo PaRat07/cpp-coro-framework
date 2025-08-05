@@ -29,7 +29,7 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-auto ProcConn(File connfd, Leaser<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
+auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -97,7 +97,7 @@ auto ProcConn(File connfd, Leaser<Connection> &conn_leaser, PreparedStmnt<int> &
 
 MainTask co_server(File fd) {
   std::array<Task<>, 2000> tasks;
-  auto conn_leaser = Leaser(co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable"));
+  auto conn_leaser = RsCoroMutex(co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable"));
   PreparedStmnt<int> stmnt;
   {
     auto leased_conn = co_await conn_leaser.Lease();
@@ -105,7 +105,7 @@ MainTask co_server(File fd) {
   }
 
   for (auto &i : tasks) {
-    i = [] (File &fd, Leaser<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
+    i = [] (File &fd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
       try {
         while (true) {
           co_await ProcConn(co_await fd.Accept(), conn_leaser, stmnt);

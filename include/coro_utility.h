@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "task.h"
+#include "my-queue.h"
 
 struct NoSuspendTask;
 
@@ -173,24 +174,24 @@ struct BinarySemaphore {
 };
 
 template<typename T>
-struct Leaser {
+struct RsCoroMutex {
 private:
-  std::stack<std::coroutine_handle<>, std::vector<std::coroutine_handle<>>> tasks_;
+  Queue<std::coroutine_handle<>> tasks_;
   T val;
   bool owned = false;
 
 public:
-  Leaser(T obj) : val(std::move(obj)) {}
+  RsCoroMutex(T obj) : val(std::move(obj)) {}
 
-  struct LeasingGuard {
+  struct CoroLockGuard {
   public:
-    using LeaserGuardImpl = std::unique_ptr<Leaser, decltype([] (Leaser *leaser) {})>;
-    explicit LeasingGuard(Leaser &leaser) {
-      leaser_ = LeaserGuardImpl{ &leaser };
+    using CoroLockGuardImpl = std::unique_ptr<RsCoroMutex, decltype([] (RsCoroMutex *leaser) {})>;
+    explicit CoroLockGuard(RsCoroMutex &leaser) {
+      leaser_ = CoroLockGuardImpl{ &leaser };
     }
 
-    LeasingGuard(LeasingGuard&&) = default;
-    LeasingGuard &operator=(LeasingGuard&&) = default;
+    CoroLockGuard(CoroLockGuard&&) = default;
+    CoroLockGuard &operator=(CoroLockGuard&&) = default;
 
 
     T &Get() {
@@ -201,30 +202,28 @@ public:
       return !leaser_;
     }
 
-    ~LeasingGuard() {
+    ~CoroLockGuard() {
       if (!leaser_) return;
-      if (!leaser_->tasks_.empty()) {
-        auto hand = leaser_->tasks_.top();
-        leaser_->tasks_.pop();
-        hand.resume();
+      if (!leaser_->tasks_.Empty()) {
+        leaser_->tasks_.Pop().resume();
       } else {
         leaser_->owned = false;
       }
     }
 
-    friend struct Leaser;
+    friend struct RsCoroMutex;
   private:
-    LeaserGuardImpl leaser_;
+    CoroLockGuardImpl leaser_;
   };
 
-  Task<LeasingGuard> Lease() {
+  Task<CoroLockGuard> Lease() {
     if (owned) {
       co_await InvokeWithHandle {
-        [this] (std::coroutine_handle<> hand) { tasks_.push(hand); }
+        [this] (std::coroutine_handle<> hand) { tasks_.Push(hand); }
       };
     } else {
       owned = true;
     }
-    co_return LeasingGuard(*this);
+    co_return CoroLockGuard(*this);
   }
 };
