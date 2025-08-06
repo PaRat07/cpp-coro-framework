@@ -238,6 +238,10 @@ Task<T> RecieveOne(Connection &conn) {
   } else {
     throw std::invalid_argument("PQgetResult returned null");
   }
+  if (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
+    throw std::invalid_argument("called RecieveOne, but second PQgetResult didnt returned null");
+  }
+
 
   co_return ans;
 }
