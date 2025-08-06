@@ -191,7 +191,7 @@ static std::vector<T> Parse(PGresult *res) {
 }
 
 template<typename T>
-Task<std::vector<T>> Recieve(Connection &conn) {
+Task<std::vector<T>> RecieveAll(Connection &conn) {
   co_await internal::ConsumeInput(conn.GetRaw());
   std::vector<T> ans;
   while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
@@ -212,6 +212,35 @@ Task<std::vector<T>> Recieve(Connection &conn) {
   }
   co_return ans;
 }
+
+template<typename T>
+Task<T> RecieveOne(Connection &conn) {
+  co_await internal::ConsumeInput(conn.GetRaw());
+  T ans;
+  if (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
+    switch (PQresultStatus(res_ptr.get())) {
+    case PGRES_TUPLES_OK: {
+      if (PQntuples(res_ptr.get()) != 1) {
+        throw std::invalid_argument(fmt::format("called RecieveOne but got {} rows", PQntuples(res_ptr.get())));
+      }
+      ans = ParseRow<T>(0, res_ptr.get());
+      break;
+    }
+    case PGRES_PIPELINE_ABORTED:
+    case PGRES_FATAL_ERROR: {
+      Unwrap(conn.GetRaw(), false);
+      break;
+    }
+    default: {
+      // idk
+    }
+    }
+  } else {
+    throw std::invalid_argument("PQgetResult returned null");
+  }
+
+  co_return ans;
+}
 } // namespace internal
 
 
@@ -227,7 +256,7 @@ public:
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
     co_await File(PQsocket(conn.GetRaw())).Poll(false);
     internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
-    co_await internal::Recieve<std::tuple<>>(conn);
+    co_await internal::RecieveOne<std::tuple<>>(conn);
     co_return PreparedStmnt(std::move(name));
   }
 
@@ -282,11 +311,20 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
 } // namespace internal
 
 template<typename T, typename... Ts>
-Task<std::vector<T>> Exec(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
+Task<std::vector<T>> QueryAll(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
   internal::Execute(conn, stmnt, args...);
   while (1 == PQflush(conn.GetRaw())) {
     co_await File(PQsocket(conn.GetRaw())).Poll(false);
   }
-  co_return co_await internal::Recieve<T>(conn);
+  co_return co_await internal::RecieveAll<T>(conn);
+}
+
+template<typename T, typename... Ts>
+Task<T> QueryOne(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
+  internal::Execute(conn, stmnt, args...);
+  while (1 == PQflush(conn.GetRaw())) {
+    co_await File(PQsocket(conn.GetRaw())).Poll(false);
+  }
+  co_return co_await internal::RecieveOne<T>(conn);
 }
 

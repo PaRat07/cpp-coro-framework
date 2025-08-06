@@ -68,13 +68,10 @@ auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<i
             };
             DbResp resp;
             // co_await SleepFor(std::chrono::milliseconds(50));
-            std::vector<std::tuple<int, int>> resp_vec;
             {
               auto conn_guard = std::move(co_await conn_leaser.Lease());
-              resp_vec = co_await Exec<std::tuple<int, int>>(conn_guard.Get(), stmnt, std::byteswap(random_id));
-            }
-            for (auto [ resp_id, resp_num] : resp_vec) {
-                resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
+              auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn_guard.Get(), stmnt, std::byteswap(random_id));
+              resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
             co_await SendResponse(connfd, resp_buf,
