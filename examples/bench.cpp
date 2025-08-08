@@ -29,6 +29,7 @@ struct InvokeOnConstruct {
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
+
 auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
@@ -61,15 +62,14 @@ auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<i
         }
         else if (req.request_target == "/db") {
           // std::cout << "got db req" << std::endl;
-            int random_id = rand() % 10'000;
+            int random_id = rand() % 10'000 + 1;
             struct DbResp {
                 int id;
                 int randomNumber;
             };
             DbResp resp;
-            // co_await SleepFor(std::chrono::milliseconds(50));
             {
-              auto conn_guard = std::move(co_await conn_leaser.Lease());
+              auto conn_guard = co_await conn_leaser.Lease();
               auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn_guard.Get(), stmnt, std::byteswap(random_id));
               resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }

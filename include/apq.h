@@ -217,13 +217,41 @@ template<typename T>
 Task<T> RecieveOne(Connection &conn) {
   co_await internal::ConsumeInput(conn.GetRaw());
   T ans;
-  if (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
+  int ln_cnt = 0;
+  while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
+    switch (PQresultStatus(res_ptr.get())) {
+    case PGRES_TUPLES_OK:
+    case PGRES_SINGLE_TUPLE:
+    case PGRES_TUPLES_CHUNK: {
+      size_t tup_cnt = PQntuples(res_ptr.get());
+      ln_cnt += tup_cnt;
+      if (tup_cnt > 0) {
+        ans = ParseRow<T>(0, res_ptr.get());
+      }
+      break;
+    }
+    case PGRES_PIPELINE_ABORTED:
+    case PGRES_FATAL_ERROR: {
+      Unwrap(conn.GetRaw(), false);
+    }
+    default: {
+      // idk
+      throw std::invalid_argument(fmt::format("unprocessed PQresultStatus (value: {})", static_cast<int>(PQresultStatus(res_ptr.get()))));
+    }
+    }
+  }
+  if (ln_cnt != 1) {
+    throw std::invalid_argument(fmt::format("called RecieveOne but got {} rows", ln_cnt));
+  }
+  co_return ans;
+}
+
+Task<> RecieveEmpty(Connection &conn) {
+  co_await internal::ConsumeInput(conn.GetRaw());
+  while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
     switch (PQresultStatus(res_ptr.get())) {
     case PGRES_TUPLES_OK: {
-      if (PQntuples(res_ptr.get()) != 1) {
-        throw std::invalid_argument(fmt::format("called RecieveOne but got {} rows", PQntuples(res_ptr.get())));
-      }
-      ans = ParseRow<T>(0, res_ptr.get());
+      throw std::invalid_argument(fmt::format("called RecieveEmpty but got rows"));
       break;
     }
     case PGRES_PIPELINE_ABORTED:
@@ -235,15 +263,8 @@ Task<T> RecieveOne(Connection &conn) {
       // idk
     }
     }
-  } else {
-    throw std::invalid_argument("PQgetResult returned null");
   }
-  if (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
-    throw std::invalid_argument("called RecieveOne, but second PQgetResult didnt returned null");
-  }
-
-
-  co_return ans;
+  co_return;
 }
 } // namespace internal
 
@@ -260,7 +281,7 @@ public:
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
     co_await File(PQsocket(conn.GetRaw())).Poll(false);
     internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
-    co_await internal::RecieveOne<std::tuple<>>(conn);
+    co_await internal::RecieveEmpty(conn);
     co_return PreparedStmnt(std::move(name));
   }
 
