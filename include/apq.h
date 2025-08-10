@@ -1,5 +1,5 @@
 #pragma once
-
+#define MY_USE_PIPELINED
 // #include "io_uring_event_loop.h"
 
 #include <memory>
@@ -68,7 +68,9 @@ public:
     // TODO make async
     auto conn = ConnPtr(PQconnectdb(init_state.data()));
     internal::Unwrap(conn.get(), 0 == PQsetnonblocking(conn.get(), 1));
+#ifdef MY_USE_PIPELINED
     internal::Unwrap(conn.get(), 1 == PQenterPipelineMode(conn.get()));
+#endif
 
     auto res_conn = Connection{ std::move(conn) };
 
@@ -281,7 +283,9 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
+#ifdef MY_USE_PIPELINED
     internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
+#endif
     co_await File(PQsocket(conn.GetRaw())).Poll(false);
     internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
     co_await internal::RecieveEmpty(conn);
@@ -335,7 +339,10 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
     } (std::integral_constant<size_t, 0>{}, args...);
   }
   internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
+
+#ifdef MY_USE_PIPELINED
   internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
+#endif
 }
 } // namespace internal
 
