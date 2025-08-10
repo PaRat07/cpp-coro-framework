@@ -92,23 +92,11 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
 }
 
 MainTask co_server(File fd) {
-  std::array<Task<>, 2000> tasks;
   auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
   auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
-
-  for (auto &i : tasks) {
-    i = [] (File &fd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
-      try {
-        while (true) {
-          co_await ProcConn(co_await fd.Accept(), conn, stmnt);
-        }
-      } catch (std::exception &exc) {
-        std::cerr << exc.what() << std::endl;
-      }
-      co_return;
-    } (fd, conn, stmnt);
+  while (true) {
+    spawn(ProcConn(co_await fd.Accept(), conn, stmnt));
   }
-  co_await WhenAll(tasks);
   co_return;
 }
 
@@ -209,7 +197,7 @@ int main() {
     //   } ().RunLoop<IOUringEventLoop>();
     // }
 
-    co_server(fd).RunLoop<IOUringEventLoop, OncePerCycleEventLoop, TimedEventLoop>();
+    co_server(fd).RunLoop<IOUringEventLoop>();
 }
 
 

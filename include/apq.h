@@ -306,8 +306,9 @@ public:
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
     internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
-    co_await File(PQsocket(conn.GetRaw())).Poll(false);
-    internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
+    while (1 == PQflush(conn.GetRaw())) {
+      co_await File(PQsocket(conn.GetRaw())).Poll(false);
+    }
     co_await internal::RecieveEmpty(conn);
     co_return PreparedStmnt(std::move(name));
   }
