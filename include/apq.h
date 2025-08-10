@@ -51,6 +51,7 @@ void Unwrap(PGconn *conn, bool res) {
 
 struct Connection {
   struct ConnState {
+    BinarySemaphore need_write;
     bool alive = true;
     AsyncQueue<std::coroutine_handle<>> to_resume;
   };
@@ -67,6 +68,7 @@ public:
     internal::Unwrap(conn.get(), 1 == PQenterPipelineMode(conn.get()));
 
     auto res_conn = Connection{ std::move(conn) };
+    // reader
     spawn([] (std::shared_ptr<ConnState> state, PGconn *conn) -> Task<> {
       auto sock = File(PQsocket(conn));
       while (state->alive) {
@@ -78,6 +80,23 @@ public:
           PQconsumeInput(conn);
         } else {
           (co_await state->to_resume.Pop()).resume();
+        }
+      }
+    } (res_conn.state, res_conn.GetRaw()));
+
+    // writer
+    spawn([] (std::shared_ptr<ConnState> state, PGconn *conn) -> Task<> {
+      auto sock = File(PQsocket(conn));
+      while (state->alive) {
+        co_await state->need_write.Acquire();
+        if (!state->alive) {
+          co_return;
+        }
+        while (PQflush(conn) == 1) {
+          co_await sock.Poll(false);
+          if (!state->alive) {
+            co_return;
+          }
         }
       }
     } (res_conn.state, res_conn.GetRaw()));
@@ -94,6 +113,10 @@ public:
 
   ~Connection() {
     if (state) state->alive = false;
+  }
+
+  void NeedWrite() {
+    state->need_write.Release();
   }
 
 private:
@@ -306,9 +329,7 @@ public:
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
     internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
-    while (1 == PQflush(conn.GetRaw())) {
-      co_await File(PQsocket(conn.GetRaw())).Poll(false);
-    }
+    conn.NeedWrite();
     co_await internal::RecieveEmpty(conn);
     co_return PreparedStmnt(std::move(name));
   }
@@ -367,18 +388,14 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
 template<typename T, typename... Ts>
 Task<std::vector<T>> QueryAll(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
   internal::Execute(conn, stmnt, args...);
-  while (1 == PQflush(conn.GetRaw())) {
-    co_await File(PQsocket(conn.GetRaw())).Poll(false);
-  }
+  conn.NeedWrite();
   co_return co_await internal::RecieveAll<T>(conn);
 }
 
 template<typename T, typename... Ts>
 Task<T> QueryOne(Connection &conn, PreparedStmnt<Ts...> &stmnt, const Ts&... args) {
   internal::Execute(conn, stmnt, args...);
-  while (1 == PQflush(conn.GetRaw())) {
-    co_await File(PQsocket(conn.GetRaw())).Poll(false);
-  }
+  conn.NeedWrite();
   co_return co_await internal::RecieveOne<T>(conn);
 }
 
