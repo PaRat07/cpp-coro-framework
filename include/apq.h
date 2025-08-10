@@ -1,5 +1,4 @@
 #pragma once
-#define MY_USE_PIPELINED
 // #include "io_uring_event_loop.h"
 
 #include <memory>
@@ -13,6 +12,7 @@
 #include <span>
 #include <stack>
 #include <string>
+#include <my-async-queue.h>
 
 #include "coro_utility.h"
 #include "fmt/format.h"
@@ -47,33 +47,40 @@ void Unwrap(PGconn *conn, bool res) {
   }
 }
 
-
-Task<> ConsumeInput(PGconn *conn) {
-  File file{PQsocket(conn)};
-  while (PQisBusy(conn)) {
-    co_await file.Poll(true);
-    PQconsumeInput(conn);
-  }
-  co_return;
-}
-
 } // namespace internal
 
 struct Connection {
+  struct ConnState {
+    bool alive = true;
+    AsyncQueue<std::coroutine_handle<>> to_resume;
+  };
+
 public:
   using ConnPtr = std::unique_ptr<PGconn, decltype([] (PGconn *conn) { PQfinish(conn); })>;
 
+  Connection(Connection&&) = default;
 
   static Task<Connection> Create(std::string init_state) {
     // TODO make async
     auto conn = ConnPtr(PQconnectdb(init_state.data()));
     internal::Unwrap(conn.get(), 0 == PQsetnonblocking(conn.get(), 1));
-#ifdef MY_USE_PIPELINED
     internal::Unwrap(conn.get(), 1 == PQenterPipelineMode(conn.get()));
-#endif
 
     auto res_conn = Connection{ std::move(conn) };
-
+    spawn([] (std::shared_ptr<ConnState> state, PGconn *conn) -> Task<> {
+      auto sock = File(PQsocket(conn));
+      while (state->alive) {
+        if (PQisBusy(conn)) {
+          co_await sock.Poll(true);
+          if (!state->alive) {
+            co_return;
+          }
+          PQconsumeInput(conn);
+        } else {
+          (co_await state->to_resume.Pop()).resume();
+        }
+      }
+    } (res_conn.state, res_conn.GetRaw()));
     co_return res_conn;
   }
 
@@ -81,8 +88,17 @@ public:
     return conn.get();
   }
 
+  void AddWaiter(std::coroutine_handle<> h) {
+    state->to_resume.Push(h);
+  }
+
+  ~Connection() {
+    if (state) state->alive = false;
+  }
+
 private:
   ConnPtr conn;
+  std::shared_ptr<ConnState> state = std::make_shared<ConnState>();
 
   Connection(ConnPtr conn_ptr) {
     conn = std::move(conn_ptr);
@@ -195,7 +211,9 @@ static std::vector<T> Parse(PGresult *res) {
 
 template<typename T>
 Task<std::vector<T>> RecieveAll(Connection &conn) {
-  co_await internal::ConsumeInput(conn.GetRaw());
+  co_await InvokeWithHandle{
+    [&conn] (std::coroutine_handle<> h) { conn.AddWaiter(h); }
+  };
   std::vector<T> ans;
   while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
     switch (PQresultStatus(res_ptr.get())) {
@@ -218,7 +236,9 @@ Task<std::vector<T>> RecieveAll(Connection &conn) {
 
 template<typename T>
 Task<T> RecieveOne(Connection &conn) {
-  co_await internal::ConsumeInput(conn.GetRaw());
+  co_await InvokeWithHandle{
+    [&conn] (std::coroutine_handle<> h) { conn.AddWaiter(h); }
+  };
   T ans;
   int ln_cnt = 0;
   while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
@@ -251,7 +271,9 @@ Task<T> RecieveOne(Connection &conn) {
 }
 
 Task<> RecieveEmpty(Connection &conn) {
-  co_await internal::ConsumeInput(conn.GetRaw());
+  co_await InvokeWithHandle{
+    [&conn] (std::coroutine_handle<> h) { conn.AddWaiter(h); }
+  };
   while (auto res_ptr = PGresPtr(PQgetResult(conn.GetRaw()))) {
     switch (PQresultStatus(res_ptr.get())) {
     case PGRES_TUPLES_OK: {
@@ -283,9 +305,7 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
-#ifdef MY_USE_PIPELINED
     internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
-#endif
     co_await File(PQsocket(conn.GetRaw())).Poll(false);
     internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
     co_await internal::RecieveEmpty(conn);
@@ -339,10 +359,7 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
     } (std::integral_constant<size_t, 0>{}, args...);
   }
   internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
-
-#ifdef MY_USE_PIPELINED
   internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
-#endif
 }
 } // namespace internal
 

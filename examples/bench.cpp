@@ -30,7 +30,7 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 
-auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
+auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -69,8 +69,7 @@ auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<i
             };
             DbResp resp;
             {
-              auto conn_guard = co_await conn_leaser.Lease();
-              auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn_guard.Get(), stmnt, std::byteswap(random_id));
+              auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
               resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
@@ -94,24 +93,20 @@ auto ProcConn(File connfd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<i
 
 MainTask co_server(File fd) {
   std::array<Task<>, 2000> tasks;
-  auto conn_leaser = RsCoroMutex(co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable"));
-  PreparedStmnt<int> stmnt;
-  {
-    auto leased_conn = co_await conn_leaser.Lease();
-    stmnt = co_await decltype(stmnt)::Create(leased_conn.Get(), R"(SELECT * FROM "world" WHERE id = $1;)");
-  }
+  auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
+  auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
 
   for (auto &i : tasks) {
-    i = [] (File &fd, RsCoroMutex<Connection> &conn_leaser, PreparedStmnt<int> &stmnt) -> Task<> {
+    i = [] (File &fd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
       try {
         while (true) {
-          co_await ProcConn(co_await fd.Accept(), conn_leaser, stmnt);
+          co_await ProcConn(co_await fd.Accept(), conn, stmnt);
         }
       } catch (std::exception &exc) {
         std::cerr << exc.what() << std::endl;
       }
       co_return;
-    } (fd, conn_leaser, stmnt);
+    } (fd, conn, stmnt);
   }
   co_await WhenAll(tasks);
   co_return;
