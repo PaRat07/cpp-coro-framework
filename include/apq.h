@@ -68,6 +68,7 @@ public:
     // TODO make async
     auto conn = ConnPtr(PQconnectdb(init_state.data()));
     internal::Unwrap(conn.get(), 0 == PQsetnonblocking(conn.get(), 1));
+    internal::Unwrap(conn.get(), 1 == PQenterPipelineMode(conn.get()));
 
     auto res_conn = Connection{ std::move(conn) };
 
@@ -230,6 +231,7 @@ Task<T> RecieveOne(Connection &conn) {
       }
       break;
     }
+    case PGRES_PIPELINE_SYNC: { break; }
     case PGRES_PIPELINE_ABORTED:
     case PGRES_FATAL_ERROR: {
       Unwrap(conn.GetRaw(), false);
@@ -279,6 +281,7 @@ public:
     std::string name = fmt::format("unique_sttmnt_name{}", internal::sttmnt_cnt++);
     static constexpr std::array<Oid, sizeof...(Ts)> types = { internal::OidVal<Ts>::value... };
     internal::Unwrap(conn.GetRaw(), 1 == PQsendPrepare(conn.GetRaw(), name.data(), stmnt.data.data(), sizeof...(Ts), types.data()));
+    internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
     co_await File(PQsocket(conn.GetRaw())).Poll(false);
     internal::Unwrap(conn.GetRaw(), -1 != PQflush(conn.GetRaw()));
     co_await internal::RecieveEmpty(conn);
@@ -332,6 +335,7 @@ void Execute(Connection &conn, const PreparedStmnt<Ts...> &stmnt, const Ts&... a
     } (std::integral_constant<size_t, 0>{}, args...);
   }
   internal::Unwrap(conn.GetRaw(), PQsendQueryPrepared(conn.GetRaw(), stmnt.GetName().data(), types.size(), args_ptrs.data(), szs.data(), format.data(), 1));
+  internal::Unwrap(conn.GetRaw(), PQsendPipelineSync(conn.GetRaw()));
 }
 } // namespace internal
 
