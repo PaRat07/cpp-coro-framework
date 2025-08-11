@@ -29,7 +29,6 @@ struct UringHolder {
   ~UringHolder() { io_uring_queue_exit(&ring); }
 
   io_uring ring;
-  size_t cur_in = 0;
 };
 
 class IOUringEventLoop {
@@ -40,28 +39,25 @@ public:
   };
 
   static void Resume() {
-    io_uring_cqe *cqe;
-    unsigned head;
-    size_t cur_proc = 0;
-    io_uring_for_each_cqe(&holder.ring, head, cqe) {
-      auto res_ptr = std::bit_cast<ResHolder*>(cqe->user_data);;
-      if (res_ptr == nullptr) {
-        throw std::runtime_error("wtf");
+    while (true) {
+      if (not_submitted_cnt_ > 0) [[likely]] {
+        Unwrap(io_uring_submit(&holder.ring));
+        not_submitted_cnt_ = 0;
       }
-      ResHolder &res_ref = *res_ptr;
-      res_ref.cnt = std::max(0, cqe->res);
-      --holder.cur_in;
-      res_ref.handle.resume();
-      ++cur_proc;
-    }
-    io_uring_cq_advance(&holder.ring, cur_proc);
-    if (not_submitted_cnt_ > 0) [[likely]] {
-      Unwrap(io_uring_submit(&holder.ring));
-      not_submitted_cnt_ = 0;
+      io_uring_cqe *cqe;
+      unsigned head;
+      size_t cur_proc = 0;
+
+      Unwrap(io_uring_wait_cqe(&holder.ring, &cqe));
+      Resume(cqe);
+      io_uring_cqe_seen(&holder.ring, cqe);
+      io_uring_for_each_cqe(&holder.ring, head, cqe) {
+        Resume(cqe);
+        ++cur_proc;
+      }
+      io_uring_cq_advance(&holder.ring, cur_proc);
     }
   }
-
-  static bool IsEmpty() { return holder.cur_in == 0; }
 
   static void Init() { holder.Init(); }
 
@@ -75,7 +71,6 @@ public:
       io_uring_sqe *sqe = io_uring_get_sqe(&holder.ring);
       sqe->user_data = std::bit_cast<__u64>(&res);
       io_uring_prep_poll_add(sqe, fd, POLLIN);
-      ++holder.cur_in;
       ++not_submitted_cnt_;
     }
 
@@ -88,6 +83,17 @@ public:
 private:
   static inline size_t not_submitted_cnt_ = 0;
   static inline UringHolder holder = {};
+
+  static void Resume(io_uring_cqe *cqe) {
+    auto resumable_ptr = std::bit_cast<ResHolder*>(cqe->user_data);
+    if (resumable_ptr == nullptr) {
+      return;
+      throw std::runtime_error("wtf");
+    }
+    ResHolder &res_ref = *resumable_ptr;
+    res_ref.cnt = std::max(0, cqe->res);
+    res_ref.handle.resume();
+  }
 };
 
 consteval in_addr operator""_addr(const char *data, size_t sz) {
@@ -121,7 +127,6 @@ public:
         }
         sqe->user_data = std::bit_cast<__u64>(&res);
         io_uring_prep_read(sqe, fd, data.data(), data.size(), off);
-        ++IOUringEventLoop::holder.cur_in;
         ++IOUringEventLoop::not_submitted_cnt_;
       }
 
@@ -155,7 +160,6 @@ public:
         sqe->user_data = std::bit_cast<__u64>(&res);
         io_uring_prep_accept(sqe, fd, reinterpret_cast<sockaddr *>(&client_addr),
                              &client_len, SOCK_NONBLOCK);
-        ++IOUringEventLoop::holder.cur_in;
         ++IOUringEventLoop::not_submitted_cnt_;
       }
 
@@ -190,7 +194,6 @@ public:
         }
         sqe->user_data = std::bit_cast<__u64>(&res);
         io_uring_prep_send(sqe, fd, data.data(), data.size(), flags);
-        ++IOUringEventLoop::holder.cur_in;
         ++IOUringEventLoop::not_submitted_cnt_;
       }
 
@@ -222,7 +225,6 @@ public:
         }
         sqe->user_data = std::bit_cast<__u64>(&res);
         io_uring_prep_write(sqe, fd, data.data(), data.size(), off);
-        ++IOUringEventLoop::holder.cur_in;
         ++IOUringEventLoop::not_submitted_cnt_;
       }
 
@@ -258,7 +260,6 @@ public:
         }
         sqe->user_data = std::bit_cast<__u64>(&res);
         io_uring_prep_recv(sqe, fd, data.data(), data.size(), flags);
-        ++IOUringEventLoop::holder.cur_in;
         ++IOUringEventLoop::not_submitted_cnt_;
       }
 
@@ -290,7 +291,6 @@ public:
         }
         sqe->user_data = std::bit_cast<__u64>(&res);
         io_uring_prep_poll_add(sqe, fd, (is_read ? POLLIN : POLLOUT));
-        ++IOUringEventLoop::holder.cur_in;
         ++IOUringEventLoop::not_submitted_cnt_;
       }
 
