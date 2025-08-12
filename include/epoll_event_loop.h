@@ -102,7 +102,7 @@ public:
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
-      .event = EPOLLIN
+      .event = static_cast<EPOLL_EVENTS>(EPOLLIN | EPOLLONESHOT)
     };
     lseek(fd, off, SEEK_SET);
     co_return Unwrap(read(fd, data.data(), data.size()));
@@ -115,7 +115,7 @@ public:
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
-      .event = EPOLLIN
+      .event = static_cast<EPOLL_EVENTS>(EPOLLIN | EPOLLONESHOT)
     };
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
@@ -133,7 +133,7 @@ public:
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
-      .event = EPOLLOUT
+      .event = static_cast<EPOLL_EVENTS>(EPOLLOUT | EPOLLONESHOT)
     };
     co_return Unwrap(send(fd, data.data(), data.size(), flags));
   }
@@ -144,7 +144,7 @@ public:
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
-      .event = EPOLLOUT
+      .event = static_cast<EPOLL_EVENTS>(EPOLLOUT | EPOLLONESHOT)
     };
     lseek(fd, off, SEEK_SET);
     co_return Unwrap(write(fd, data.data(), data.size()));
@@ -160,7 +160,7 @@ public:
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
-      .event = EPOLLIN
+      .event = static_cast<EPOLL_EVENTS>(EPOLLIN | EPOLLONESHOT)
     };
     co_return Unwrap(recv(fd, data.data(), data.size(), flags));
   }
@@ -173,7 +173,7 @@ public:
     co_await EpollAwaitable {
       .fd = fd,
       .armed = buf,
-      .event = (is_read ? EPOLLIN : EPOLLOUT)
+      .event = static_cast<EPOLL_EVENTS>((is_read ? EPOLLIN : EPOLLOUT) | EPOLLONESHOT)
     };
     co_return;
   }
