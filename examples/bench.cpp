@@ -30,7 +30,7 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 
-auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> Task<> {
+auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
     std::array<char, 1024> resp_buf;
     HttpParser<1024> parser(connfd);
     bool reuse_connection = true;
@@ -60,7 +60,7 @@ auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> T
                                   },
                                    body);
         }
-        /*else if (req.request_target == "/db") {
+        else if (req.request_target == "/db") {
           // std::cout << "got db req" << std::endl;
             int random_id = rand() % 10'000 + 1;
             struct DbResp {
@@ -81,7 +81,7 @@ auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> T
                                   },
                                    body);
         }
-        */
+
         else {
           throw std::runtime_error("incorrect prefix");
         }
@@ -93,11 +93,11 @@ auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> T
 }
 
 MainTask co_server(int fd_val) {
-    File fd(fd_val);
-  // auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
-  // auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
+  File fd(fd_val);
+  auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
+  auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
   while (true) {
-    spawn(ProcConn(co_await fd.Accept()/*, conn, stmnt*/));
+    spawn(ProcConn(co_await fd.Accept(), conn, stmnt));
   }
   co_return;
 }

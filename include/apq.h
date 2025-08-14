@@ -53,6 +53,7 @@ struct Connection {
   struct ConnState {
     BinarySemaphore need_write;
     bool alive = true;
+    File sock;
     AsyncQueue<std::coroutine_handle<>> to_resume;
   };
 
@@ -68,12 +69,14 @@ public:
     internal::Unwrap(conn.get(), 1 == PQenterPipelineMode(conn.get()));
 
     auto res_conn = Connection{ std::move(conn) };
+    res_conn.state = std::make_shared<ConnState>(ConnState{
+      .sock = PQsocket(res_conn.conn.get())
+    });
     // reader
     spawn([] (std::shared_ptr<ConnState> state, PGconn *conn) -> Task<> {
-      auto sock = File(PQsocket(conn));
       while (state->alive) {
         if (PQisBusy(conn)) {
-          co_await sock.Poll(true);
+          co_await state->sock.Poll(true);
           if (!state->alive) {
             co_return;
           }
@@ -86,14 +89,13 @@ public:
 
     // writer
     spawn([] (std::shared_ptr<ConnState> state, PGconn *conn) -> Task<> {
-      auto sock = File(PQsocket(conn));
       while (state->alive) {
         co_await state->need_write.Acquire();
         if (!state->alive) {
           co_return;
         }
         while (PQflush(conn) == 1) {
-          co_await sock.Poll(false);
+          co_await state->sock.Poll(false);
           if (!state->alive) {
             co_return;
           }
@@ -121,7 +123,7 @@ public:
 
 private:
   ConnPtr conn;
-  std::shared_ptr<ConnState> state = std::make_shared<ConnState>();
+  std::shared_ptr<ConnState> state;
 
   Connection(ConnPtr conn_ptr) {
     conn = std::move(conn_ptr);
