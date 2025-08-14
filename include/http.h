@@ -5,7 +5,6 @@
 #include "task.h"
 
 #include <chrono>
-#include <io_uring_event_loop.h>
 #include <charconv>
 #include <algorithm>
 
@@ -118,7 +117,7 @@ public:
 
   Task<> ReadMore() {
     std::ranges::copy(cur_have, buf_.begin());
-    cur_have = { buf_.data(), cur_have.size() + co_await fd_->Recieve(std::span(buf_).subspan(cur_have.size())) };
+    cur_have = { buf_.data(), cur_have.size() + co_await fd_->Read(std::span(buf_).subspan(cur_have.size())) };
   }
 
   void Reconnect(File &new_fd) {
@@ -169,6 +168,6 @@ Task<> SendResponse(File &fd, std::span<char> storage, std::span<const std::pair
   }
   it = rng::copy("\r\n"sv, it).out;
   it = rng::copy(body, it).out;
-  co_await fd.Send(storage.subspan(0, it - storage.begin()), 0);
+  co_await fd.Write(storage.subspan(0, it - storage.begin()));
   co_return;
 }

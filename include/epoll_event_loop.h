@@ -11,12 +11,12 @@
 #include <ranges>
 
 #include "unistd.h"
-#include "liburing.h"
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <poll.h>
 
 #include "task.h"
+#include "coro_utility.h"
+#include <memory>
 
 namespace epoll {
 namespace chr = std::chrono;
@@ -33,27 +33,30 @@ struct EpollHolder {
 };
 
 class EpollEventLoop {
- public:
+public:
+  struct EpollWaiter {
+    uint32_t events;
+    std::coroutine_handle<> handle;
+  };
+
   static void Resume() noexcept {
     int nready = Unwrap(epoll_wait(holder_.epoll_fd, events_.data(), events_.size(), /*timeout_ms=*/-1));
     for (auto i : events_ | std::views::take(nready)) {
-      std::coroutine_handle<>::from_address(i.data.ptr).resume();
-    }
-    if (nready == events_.size()) [[unlikely]] {
-      events_.resize(events_.size() * 2);
+      auto *waiter = std::bit_cast<EpollWaiter*>(i.data.ptr);
+      waiter->events = i.events;
+      waiter->handle.resume();
     }
   }
 
   static void Init() {
     holder_.Init();
-    events_.resize(32);
   }
 
 
   friend struct File;
 
  private:
-  static inline std::vector<epoll_event> events_;
+  static inline std::array<epoll_event, 1024> events_;
   static inline EpollHolder holder_;
 };
   
@@ -74,136 +77,125 @@ consteval in_addr operator""_addr(const char *data, size_t sz) {
 
 struct File {
 private:
+  struct SharedData {
+    bool alive = true;
+    Queue<std::coroutine_handle<>> on_read;
+    Queue<std::coroutine_handle<>> on_write;
+  };
+
+
   struct EpollAwaitable {
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> handle) {
-      epoll_event ev{};
-      ev.events = event;
-      ev.data.ptr = handle.address();
-      Unwrap(epoll_ctl(EpollEventLoop::holder_.epoll_fd, (armed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD), fd, &ev));
+      (is_read ? sh_data.on_read : sh_data.on_write).Push(handle);
     }
 
     void await_resume() const noexcept {}
 
-    int fd;
-    bool armed;
-    EPOLL_EVENTS event;
+    bool is_read;
+    SharedData &sh_data;
   };
 
-
 public:
-  auto Read(std::span<char> data, off_t off) -> Task<size_t> {
-    if (int cnt = read(fd, data.data(), data.size()); cnt != -1) {
-      co_return cnt;
+  auto Read(std::span<char> data) -> Task<size_t> {
+    int cnt;
+    while ((cnt = read(fd, data.data(), data.size())) == -1) {
+      if (errno != EWOULDBLOCK) [[unlikely]] {
+        throw std::system_error(errno, std::system_category(), "error reading from fd");
+      }
+      co_await Poll(true);
     }
-    bool buf = armed;
-    armed = true;
-    co_await EpollAwaitable {
-      .fd = fd,
-      .armed = buf,
-      .event = static_cast<EPOLL_EVENTS>(EPOLLIN | EPOLLONESHOT)
-    };
-    lseek(fd, off, SEEK_SET);
-    co_return Unwrap(read(fd, data.data(), data.size()));
+    co_return cnt;
   }
 
   auto Accept() -> Task<File> {
-    bool buf = armed;
-    armed = true;
-
-    co_await EpollAwaitable {
-      .fd = fd,
-      .armed = buf,
-      .event = static_cast<EPOLL_EVENTS>(EPOLLIN | EPOLLONESHOT)
-    };
+    int sock;
     sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
-    co_return File(accept4(fd, reinterpret_cast<sockaddr *>(&client_addr), &client_len, SOCK_NONBLOCK));
-  }
-
-
-
-  auto Send(std::span<const char> data, int flags) -> Task<size_t> {
-    if (int cnt = send(fd, data.data(), data.size(), flags); cnt != -1) {
-      co_return cnt;
+    while ((sock = accept4(fd, reinterpret_cast<sockaddr *>(&client_addr), &client_len, SOCK_NONBLOCK)) == -1) {
+      if (errno != EWOULDBLOCK) [[unlikely]] {
+        throw std::system_error(errno, std::system_category(), "error accepting at fd");
+      }
+      co_await Poll(true);
     }
-    bool buf = armed;
-    armed = true;
-    co_await EpollAwaitable {
-      .fd = fd,
-      .armed = buf,
-      .event = static_cast<EPOLL_EVENTS>(EPOLLOUT | EPOLLONESHOT)
-    };
-    co_return Unwrap(send(fd, data.data(), data.size(), flags));
+    co_return sock;
   }
 
-  auto Write(std::span<const char> data, off_t off) -> Task<size_t> {
-    bool buf = armed;
-    armed = true;
-    co_await EpollAwaitable {
-      .fd = fd,
-      .armed = buf,
-      .event = static_cast<EPOLL_EVENTS>(EPOLLOUT | EPOLLONESHOT)
-    };
-    lseek(fd, off, SEEK_SET);
-    co_return Unwrap(write(fd, data.data(), data.size()));
-  }
-
-
-  auto Recieve(std::span<char> data, int flags = 0) -> Task<size_t> {
-    if (int cnt = recv(fd, data.data(), data.size(), flags); cnt != -1) {
-      co_return cnt;
+  auto Write(std::span<const char> data) -> Task<size_t> {
+    int cnt;
+    while ((cnt = write(fd, data.data(), data.size())) == -1) {
+      if (errno != EWOULDBLOCK) [[unlikely]] {
+        throw std::system_error(errno, std::system_category(), "error writing from fd");
+      }
+      co_await Poll(false);
     }
-    bool buf = armed;
-    armed = true;
-    co_await EpollAwaitable {
-      .fd = fd,
-      .armed = buf,
-      .event = static_cast<EPOLL_EVENTS>(EPOLLIN | EPOLLONESHOT)
-    };
-    co_return Unwrap(recv(fd, data.data(), data.size(), flags));
+    co_return cnt;
   }
-
-
 
   auto Poll(bool is_read) -> Task<> {
-    bool buf = armed;
-    armed = true;
     co_await EpollAwaitable {
-      .fd = fd,
-      .armed = buf,
-      .event = static_cast<EPOLL_EVENTS>((is_read ? EPOLLIN : EPOLLOUT) | EPOLLONESHOT)
+      .is_read = is_read,
+      .sh_data = *sh_data
     };
     co_return;
   }
 
   File(const File &rhs) = delete;
-  File(File &&rhs)
-    : fd(std::exchange(rhs.fd, -1)),
-      armed(std::exchange(rhs.armed, false)) {
-  }
-  File(int fd) : fd(fd) {
-  }
+  File(File &&rhs) = default;
 
   File &operator=(const File&) = delete;
+  File &operator=(File &&rhs) = default;
 
-  File &operator=(File &&rhs) {
-    fd = std::exchange(rhs.fd, -1);
-    armed = std::exchange(rhs.armed, false);
+  File(int fd_val) {
+    fd = fd_val;
+    spawn([] (std::shared_ptr<SharedData> sh_data, int fd) -> Task<> {
+      EpollEventLoop::EpollWaiter waiter {
+        .handle = co_await Self()
+      };
+      {
+        epoll_event event {
+          .events = EPOLLIN | EPOLLOUT | EPOLLERR,
+          .data = std::bit_cast<epoll_data_t>(&waiter)
+       };
+       Unwrap(epoll_ctl(EpollEventLoop::holder_.epoll_fd, EPOLL_CTL_ADD, fd, &event));
+      }
+      while (true) {
+        co_await std::suspend_always{};
+        if (waiter.events & EPOLLIN) {
+          if (!sh_data->on_read.Empty()) {
+            sh_data->on_read.Pop().resume();
+          }
+        }
+        if (waiter.events & EPOLLOUT) {
+          if (!sh_data->on_write.Empty()) {
+            sh_data->on_write.Pop().resume();
+          }
+        }
+
+        if (waiter.events & EPOLLERR || !sh_data->alive) {
+          while (!sh_data->on_read.Empty()) {
+            sh_data->on_read.Pop().resume();
+          }
+          while (!sh_data->on_write.Empty()) {
+            sh_data->on_write.Pop().resume();
+          }
+          Unwrap(epoll_ctl(EpollEventLoop::holder_.epoll_fd, EPOLL_CTL_DEL, fd, nullptr));
+          co_return;
+        }
+      }
+      co_return;
+    } (sh_data, fd));
   }
-  File() = default;
 
   ~File() {
-    if (fd != -1) {
-      if (armed) {
-        Unwrap(epoll_ctl(EpollEventLoop::holder_.epoll_fd, EPOLL_CTL_DEL, fd, nullptr));
-      }
-      close(fd);
+    if (sh_data) {
+      sh_data->alive = false;
     }
   }
 
-  int fd = -1;
-  bool armed = false;
+private:
+  int fd;
+  std::shared_ptr<SharedData> sh_data = std::make_shared<SharedData>();
 };
 } // namespace epoll
