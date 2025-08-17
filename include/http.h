@@ -36,22 +36,37 @@ ReqType ParseRequestType(std::string_view sv) {
 }
 
 struct HttpRequest {
-  ReqType req_type;
-  bool keep_alive = false;
-  std::string request_target;
-  std::string http_version;
-  std::string host;
-  std::string body;
+  std::string_view method;
+  std::string_view path;
+  std::string_view version;
+
+  struct Header {
+    std::string_view name;
+    std::string_view value;
+  };
+  std::span<Header> headers;
 };
 
-template<size_t kSz>
 class HttpParser {
 public:
   HttpParser(File &fd) : fd_(&fd) {}
 
-  Task<HttpRequest> ParseRequest() {
+  Task<HttpRequest> ParseRequest(std::span<HttpRequest::Header> headers) {
     HttpRequest ans;
     size_t cont_length = 0;
+    if (GetCurHaveSv().find("\r\n\r\n") == std::string_view::npos) {
+      std::ranges::copy(GetCurHaveSv(), data_.begin());
+      read_cnt_ -= consumed_cnt_;
+      consumed_cnt_ = 0;
+      size_t retry_cnt = 0;
+      do {
+        if (retry_cnt > 5) [[unlikely]] {
+          throw std::runtime_error("conn failed");
+        }
+        read_cnt_ += co_await fd_->Read(std::span(data_).subspan(read_cnt_));
+        ++retry_cnt;
+      } while (GetCurHaveSv().find("\r\n\r\n") == std::string_view::npos);
+    }
     { // parsing request-line
       std::string_view request_line = co_await GetLine();
       if (std::ranges::count(request_line, ' ') != 2) [[unlikely]] {
@@ -60,19 +75,21 @@ public:
 
       // parse method
       size_t method_length = request_line.find_first_of(' ');
-      ans.req_type = ParseRequestType(request_line.substr(0, method_length));
+      ans.method = request_line.substr(0, method_length);
       request_line.remove_prefix(method_length + 1);
 
       // parse request-target
       size_t rt_length = request_line.find_first_of(' ');
-      ans.request_target = request_line.substr(0, rt_length);
+      ans.path = request_line.substr(0, rt_length);
       request_line.remove_prefix(rt_length + 1);
-      ans.http_version = request_line;
+      ans.version = request_line;
     }
+    auto headers_it = headers.begin();
     for (std::string_view line = co_await GetLine(); !line.empty(); line = co_await GetLine()) {
-      if (line.starts_with("Connection: ")) {
-        ans.keep_alive = line.ends_with("keep-alive");
-      } else if (line.starts_with("Content-length: ")) {
+      if (headers_it == headers.end()) [[unlikely]] {
+        throw std::invalid_argument("http request exceeded limit of the headers");
+      }
+      if (line.starts_with("Content-length: ")) {
         auto subsv = line.substr(line.find_last_of(' ') + 1);
         auto ec = std::from_chars(subsv.begin(), subsv.end(), cont_length).ec;
         if (ec == std::errc::invalid_argument) [[unlikely]] {
@@ -81,54 +98,39 @@ public:
           throw std::invalid_argument("Content-length value dosn't fit in size_t");
         }
       }
+      auto name_length = line.find_first_of(':');
+      if (name_length == std::string_view::npos) [[unlikely]] {
+        throw std::invalid_argument("http header line doesnt containt \":\"");
+      }
+      headers_it->name = line.substr(0, name_length);
+      line.remove_prefix(name_length + 1);
+      headers_it->value = line.substr(line.find_first_not_of(' '));
+      ++headers_it;
     }
-    ans.body = co_await ReadBody(cont_length);
+    ans.headers = { headers.begin(), headers_it };
     co_return ans;
   }
 
   Task<std::string_view> GetLine() {
     size_t r_pos;
-    size_t cnt = 0;
-    while ((r_pos = cur_have.find_first_of('\r')) == cur_have.npos) {
-      co_await ReadMore();
-      ++cnt;
-      if (cnt > 5) {
-        throw std::runtime_error("connection failed");
-      }
+    if ((r_pos = GetCurHaveSv().find_first_of('\r')) == std::string_view::npos) {
+      throw std::runtime_error("idk");
     }
-    std::string_view ans = cur_have.substr(0, r_pos);
-    cur_have.remove_prefix(r_pos + 2);
+    std::string_view ans = GetCurHaveSv().substr(0, r_pos);
+    consumed_cnt_ += r_pos + 2;
     co_return ans;
-  }
-
-  Task<std::string> ReadBody(size_t len) {
-    std::string ans;
-    while (len > 0) {
-      if (cur_have.empty()) {
-        co_await ReadMore();
-      }
-      size_t read_cnt = std::min(len, cur_have.size());
-      ans.append_range(cur_have.substr(0, read_cnt));
-      cur_have.remove_prefix(read_cnt);
-      len -= read_cnt;
-    }
-    co_return ans;
-  }
-
-  Task<> ReadMore() {
-    std::ranges::copy(cur_have, buf_.begin());
-    cur_have = { buf_.data(), cur_have.size() + co_await fd_->Read(std::span(buf_).subspan(cur_have.size())) };
-  }
-
-  void Reconnect(File &new_fd) {
-    fd_ = &new_fd;
-    cur_have = {};
   }
 
 private:
   File *fd_;
-  std::array<char, kSz> buf_;
-  std::string_view cur_have;
+  size_t read_cnt_ = 0;
+  size_t consumed_cnt_ = 0;
+  std::vector<char> data_ = std::vector<char>(1024);
+
+
+  std::string_view GetCurHaveSv() const {
+    return { data_.data() + consumed_cnt_, data_.data() + read_cnt_ };
+  }
 };
 
 

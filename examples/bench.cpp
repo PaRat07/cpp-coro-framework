@@ -30,15 +30,20 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 
-auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
-    std::array<char, 1024> resp_buf;
-    HttpParser<1024> parser(connfd);
+auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> Task<> {
+    std::vector<char> resp_buf(1024);
+    HttpParser parser(connfd);
+    std::vector<HttpRequest::Header> headers(16);
     bool reuse_connection = true;
     try {
       while (reuse_connection) {
-        HttpRequest req = co_await parser.ParseRequest();
-        reuse_connection = req.keep_alive;
-        if (req.request_target == "/plaintext") {
+        HttpRequest req = co_await parser.ParseRequest(headers);
+        for (auto [name, val] : req.headers) {
+          if (name == "Connection") {
+            reuse_connection = val == "keep-alive";
+          }
+        }
+        if (req.path == "/plaintext") {
           co_await SendResponse(connfd, resp_buf,
                                 std::array{
                                   std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
@@ -47,7 +52,7 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
                                 },
                                  "Hello, world!");
         }
-        else if (req.request_target == "/json") {
+        else if (req.path == "/json") {
             struct JsonResp {
                 std::string_view message;
             };
@@ -60,7 +65,7 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
                                   },
                                    body);
         }
-        else if (req.request_target == "/db") {
+        else if (req.path == "/db") {
           // std::cout << "got db req" << std::endl;
             int random_id = rand() % 10'000 + 1;
             struct DbResp {
@@ -69,8 +74,8 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
             };
             DbResp resp;
             {
-              auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
-              resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
+              // auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
+              // resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
             }
             std::string body = rfl::json::write(resp);
             co_await SendResponse(connfd, resp_buf,
@@ -94,10 +99,10 @@ auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<
 
 MainTask co_server(int fd_val) {
   File fd(fd_val);
-  auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
-  auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
+  // auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
+  // auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
   while (true) {
-    spawn(ProcConn(co_await fd.Accept(), conn, stmnt));
+    spawn(ProcConn(co_await fd.Accept()/*, conn, stmnt*/));
   }
   co_return;
 }
