@@ -141,6 +141,8 @@ public:
     co_return;
   }
 
+  int GetNativeHandle() const noexcept { return fd; }
+
   File(const File &rhs) = delete;
   File(File &&rhs) = default;
 

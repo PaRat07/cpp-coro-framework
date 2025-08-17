@@ -31,66 +31,57 @@ struct InvokeOnConstruct {
 
 
 auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> Task<> {
-    std::vector<char> resp_buf(1024);
     HttpParser parser(connfd);
-    std::vector<HttpRequest::Header> headers(16);
-    bool reuse_connection = true;
     try {
-      while (reuse_connection) {
-        HttpRequest req = co_await parser.ParseRequest(headers);
-        for (auto [name, val] : req.headers) {
-          if (name == "Connection") {
-            reuse_connection = val == "keep-alive";
+      co_await parser.EachConnectionLoop([&connfd] (std::span<char> rsp_buf, HttpRequest req) -> Task<std::span<char>::iterator> {
+          if (req.path == "/plaintext") {
+            co_return WriteResponse(rsp_buf, connfd,
+                                  std::array{
+                                    std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
+                                    std::pair{"Server"sv, "Example"sv},
+                                    std::pair{"Connection"sv, "keep-alive"sv}
+                                  },
+                                   "Hello, world!");
           }
-        }
-        if (req.path == "/plaintext") {
-          co_await SendResponse(connfd, resp_buf,
-                                std::array{
-                                  std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
-                                  std::pair{"Server"sv, "Example"sv},
-                                  std::pair{"Connection"sv, "keep-alive"sv}
-                                },
-                                 "Hello, world!");
-        }
-        else if (req.path == "/json") {
-            struct JsonResp {
-                std::string_view message;
-            };
-            std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
-            co_await SendResponse(connfd, resp_buf,
-                                  std::array{
-                                    std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                    std::pair{"Server"sv, "Example"sv},
-                                    std::pair{"Connection"sv, "keep-alive"sv}
-                                  },
-                                   body);
-        }
-        else if (req.path == "/db") {
-          // std::cout << "got db req" << std::endl;
-            int random_id = rand() % 10'000 + 1;
-            struct DbResp {
-                int id;
-                int randomNumber;
-            };
-            DbResp resp;
-            {
-              // auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
-              // resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
-            }
-            std::string body = rfl::json::write(resp);
-            co_await SendResponse(connfd, resp_buf,
-                                  std::array{
-                                    std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                    std::pair{"Server"sv, "Example"sv},
-                                    std::pair{"Connection"sv, "keep-alive"sv}
-                                  },
-                                   body);
-        }
+          else if (req.path == "/json") {
+              struct JsonResp {
+                  std::string_view message;
+              };
+              std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
+              co_return WriteResponse(rsp_buf, connfd,
+                                    std::array{
+                                      std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                      std::pair{"Server"sv, "Example"sv},
+                                      std::pair{"Connection"sv, "keep-alive"sv}
+                                    },
+                                     body);
+          }
+          else if (req.path == "/db") {
+            // std::cout << "got db req" << std::endl;
+              int random_id = rand() % 10'000 + 1;
+              struct DbResp {
+                  int id;
+                  int randomNumber;
+              };
+              DbResp resp;
+              {
+                // auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
+                // resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
+              }
+              std::string body = rfl::json::write(resp);
+              co_return WriteResponse(rsp_buf, connfd,
+                                    std::array{
+                                      std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
+                                      std::pair{"Server"sv, "Example"sv},
+                                      std::pair{"Connection"sv, "keep-alive"sv}
+                                    },
+                                     body);
+          }
 
-        else {
-          throw std::runtime_error("incorrect prefix");
-        }
-      }
+          else {
+            throw std::runtime_error("incorrect prefix");
+          }
+      });
     } catch (const std::exception &exc) {
       std::cerr << "Request error: " << exc.what() << std::endl;
     }
@@ -210,6 +201,7 @@ int main() {
 
 // wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 16384 --timeout 8 -t 16 http://localhost:8080/plaintext -s pipeline.lua -- 16
 // wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 1024  --timeout 8 -t 1  http://localhost:8080/plaintext -s pipeline.lua -- 16
+// wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 1  --timeout 8 -t 1  http://localhost:8080/plaintext -s pipeline.lua -- 16
 
 // wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 512 --timeout 8 -t 16 "http://localhost:8080/db"
 // wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 32 --timeout 8 -t 1 "http://localhost:8080/db"

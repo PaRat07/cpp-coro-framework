@@ -8,6 +8,8 @@
 #include <charconv>
 #include <algorithm>
 
+#include <epoll_event_loop.h>
+
 using namespace fmt::literals;
 enum class ReqType {
   kGet,
@@ -48,28 +50,63 @@ struct HttpRequest {
 };
 
 class HttpParser {
+private:
+  static constexpr size_t kBufSz = 4096 * 8;
 public:
-  HttpParser(File &fd) : fd_(&fd) {}
+  HttpParser(File &fd) : fd_(&fd) {
+  }
 
-  Task<HttpRequest> ParseRequest(std::span<HttpRequest::Header> headers) {
+  // returns if was unable to read all
+  bool ReadData() {
+    while (read_cnt_ < kBufSz) {
+      ssize_t extra_read = read(fd_->GetNativeHandle(), req_buf_.data() + read_cnt_, kBufSz - read_cnt_);
+      if (extra_read == 0) [[unlikely]] {
+        throw std::runtime_error("conn failed");
+      } else if (extra_read == -1 && errno == EWOULDBLOCK) {
+        return true;
+      } else {
+        Unwrap(extra_read);
+      }
+      read_cnt_ += extra_read;
+    }
+    return false;
+  }
+
+  Task<> EachConnectionLoop(std::invocable<std::span<char>, HttpRequest> auto &&func) {
+    std::vector<HttpRequest::Header> headers_buf(16);
+    while (true) {
+      std::span rsp_buf_have(rsp_buf_);
+      std::span<char> cur_rsp;
+      consumed_cnt_ = 0;
+      read_cnt_ = 0;
+      bool can_read_more = ReadData();
+      while (true) {
+        if (auto req = ParseRequest(headers_buf); req.has_value()) {
+          std::span<char>::iterator cur_end = co_await func(rsp_buf_have, req.value());
+          rsp_buf_have = { cur_end, rsp_buf_have.end() };
+          cur_rsp = { rsp_buf_.begin(), cur_end };
+        } else {
+          break;
+        }
+      }
+      co_await fd_->Write(cur_rsp);
+      if (!can_read_more) {
+        co_await fd_->Poll(true);
+      }
+    }
+    co_return;
+  }
+
+  std::optional<HttpRequest> ParseRequest(std::span<HttpRequest::Header> headers) {
+    if (read_cnt_ == consumed_cnt_) {
+      return std::nullopt;
+    }
     HttpRequest ans;
     size_t cont_length = 0;
-    if (GetCurHaveSv().find("\r\n\r\n") == std::string_view::npos) {
-      std::ranges::copy(GetCurHaveSv(), data_.begin());
-      read_cnt_ -= consumed_cnt_;
-      consumed_cnt_ = 0;
-      size_t retry_cnt = 0;
-      do {
-        if (retry_cnt > 5) [[unlikely]] {
-          throw std::runtime_error("conn failed");
-        }
-        read_cnt_ += co_await fd_->Read(std::span(data_).subspan(read_cnt_));
-        ++retry_cnt;
-      } while (GetCurHaveSv().find("\r\n\r\n") == std::string_view::npos);
-    }
     { // parsing request-line
-      std::string_view request_line = co_await GetLine();
+      std::string_view request_line = GetLine();
       if (std::ranges::count(request_line, ' ') != 2) [[unlikely]] {
+        return std::nullopt;
         throw std::invalid_argument("http request's request-line must contain exactly 2 spaces");
       }
 
@@ -85,21 +122,25 @@ public:
       ans.version = request_line;
     }
     auto headers_it = headers.begin();
-    for (std::string_view line = co_await GetLine(); !line.empty(); line = co_await GetLine()) {
+    for (std::string_view line = GetLine(); !line.empty(); line = GetLine()) {
       if (headers_it == headers.end()) [[unlikely]] {
+        return std::nullopt;
         throw std::invalid_argument("http request exceeded limit of the headers");
       }
       if (line.starts_with("Content-length: ")) {
         auto subsv = line.substr(line.find_last_of(' ') + 1);
         auto ec = std::from_chars(subsv.begin(), subsv.end(), cont_length).ec;
         if (ec == std::errc::invalid_argument) [[unlikely]] {
+          return std::nullopt;
           throw std::invalid_argument("Content-length value is not a number");
         } else if (ec == std::errc::result_out_of_range) [[unlikely]] {
+          return std::nullopt;
           throw std::invalid_argument("Content-length value dosn't fit in size_t");
         }
       }
       auto name_length = line.find_first_of(':');
       if (name_length == std::string_view::npos) [[unlikely]] {
+        return std::nullopt;
         throw std::invalid_argument("http header line doesnt containt \":\"");
       }
       headers_it->name = line.substr(0, name_length);
@@ -108,28 +149,29 @@ public:
       ++headers_it;
     }
     ans.headers = { headers.begin(), headers_it };
-    co_return ans;
+    return ans;
   }
 
-  Task<std::string_view> GetLine() {
+  std::string_view GetLine() {
     size_t r_pos;
     if ((r_pos = GetCurHaveSv().find_first_of('\r')) == std::string_view::npos) {
       throw std::runtime_error("idk");
     }
     std::string_view ans = GetCurHaveSv().substr(0, r_pos);
     consumed_cnt_ += r_pos + 2;
-    co_return ans;
+    return ans;
   }
 
 private:
   File *fd_;
   size_t read_cnt_ = 0;
   size_t consumed_cnt_ = 0;
-  std::vector<char> data_ = std::vector<char>(1024);
+  std::vector<char> req_buf_ = std::vector<char>(kBufSz);
+  std::vector<char> rsp_buf_ = std::vector<char>(kBufSz);
 
 
   std::string_view GetCurHaveSv() const {
-    return { data_.data() + consumed_cnt_, data_.data() + read_cnt_ };
+    return { req_buf_.data() + consumed_cnt_, req_buf_.data() + read_cnt_ };
   }
 };
 
@@ -149,12 +191,12 @@ int DigCnt(int num) {
 }
 
 
-Task<> SendResponse(File &fd, std::span<char> storage, std::span<const std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
+std::span<char>::iterator WriteResponse(std::span<char> output, File &fd, std::span<const std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
   using namespace std::string_view_literals;
   namespace rng = std::ranges;
   namespace chr = std::chrono;
 
-  auto it = storage.begin();
+  auto it = output.begin();
   it = rng::copy("HTTP/1.1 200 OK\r\n"sv, it).out;
   it = rng::copy("Content-Length: "sv, it).out;
   auto buf = ToString(body.size());
@@ -170,6 +212,5 @@ Task<> SendResponse(File &fd, std::span<char> storage, std::span<const std::pair
   }
   it = rng::copy("\r\n"sv, it).out;
   it = rng::copy(body, it).out;
-  co_await fd.Write(storage.subspan(0, it - storage.begin()));
-  co_return;
+  return it;
 }
