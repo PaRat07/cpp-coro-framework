@@ -30,10 +30,10 @@ struct InvokeOnConstruct {
 #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
 
-auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> Task<> {
+auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
     HttpParser parser(connfd);
     try {
-      co_await parser.EachConnectionLoop([&connfd] (std::span<char> rsp_buf, HttpRequest req) -> Task<std::span<char>::iterator> {
+      co_await parser.EachConnectionLoop([&] (std::span<char> rsp_buf, HttpRequest req) -> Task<std::span<char>::iterator> {
           if (req.path == "/plaintext") {
             co_return WriteResponse(rsp_buf, connfd,
                                   std::array{
@@ -65,8 +65,8 @@ auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> T
               };
               DbResp resp;
               {
-                // auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
-                // resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
+                auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
+                resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
               }
               std::string body = rfl::json::write(resp);
               co_return WriteResponse(rsp_buf, connfd,
@@ -90,10 +90,10 @@ auto ProcConn(File connfd/*, Connection &conn, PreparedStmnt<int> &stmnt*/) -> T
 
 MainTask co_server(int fd_val) {
   File fd(fd_val);
-  // auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
-  // auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
+  auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
+  auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
   while (true) {
-    spawn(ProcConn(co_await fd.Accept()/*, conn, stmnt*/));
+    spawn(ProcConn(co_await fd.Accept(), conn, stmnt));
   }
   co_return;
 }
