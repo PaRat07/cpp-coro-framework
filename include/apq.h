@@ -76,11 +76,14 @@ public:
     spawn([] (std::shared_ptr<ConnState> state, PGconn *conn) -> Task<> {
       while (state->alive) {
         if (PQisBusy(conn)) {
-          co_await state->sock.Poll(true);
-          if (!state->alive) {
-            co_return;
-          }
           PQconsumeInput(conn);
+          while (PQisBusy(conn)) {
+            co_await state->sock.Poll(true);
+            if (!state->alive) {
+              co_return;
+            }
+            PQconsumeInput(conn);
+          }
         } else {
           (co_await state->to_resume.Pop()).resume();
         }

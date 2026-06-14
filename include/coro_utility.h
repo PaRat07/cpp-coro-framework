@@ -149,27 +149,24 @@ struct InvokeWithHandle {
 
 struct BinarySemaphore {
   void Release() {
-    locked = false;
-    if (handle) {
-      std::exchange(handle, {}).resume();
+    if (waiting.Empty()) {
+      ++overreleased;
+    } else {
+      waiting.Pop().resume();
     }
   }
   Task<> Acquire() {
-    if (!locked) {
-      locked = true;
+    if (overreleased > 0) {
+      --overreleased;
       co_return;
-    } else if (handle) {
-      [] noexcept {
-        throw std::runtime_error("cant Acquire multiple coros on same BinarySemaphore");
-      } ();
+    } else {
+      co_await InvokeWithHandle{ [this] (std::coroutine_handle<> handle){ waiting.Push(handle); }};
+      co_return;
     }
-    co_await WriteHandle{handle};
-    locked = true;
-    co_return;
   }
 
-  std::coroutine_handle<> handle;
-  bool locked = true;
+  size_t overreleased = 0;
+  Queue<std::coroutine_handle<>> waiting;
 };
 
 template<typename T>
