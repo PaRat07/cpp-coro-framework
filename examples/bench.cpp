@@ -47,10 +47,11 @@ auto ProcConn(io::Socket connfd) -> Task<> {
                 rfl::json::write(JsonResp{.message = "Hello, World!"});
             co_return WriteResponse(
                 rsp_buf, connfd,
-                std::array{std::pair{"Content-Type"sv,
-                                     "application/json; charset=UTF-8"sv},
-                           std::pair{"Server"sv, "Example"sv},
-                           std::pair{"Connection"sv, "keep-alive"sv}},
+                std::to_array<std::pair<std::string_view, std::string_view>>({
+                  { "Content-Type", "application/json; charset=UTF-8" },
+                  { "Server", "Example" },
+                  { "Connection", "keep-alive" }
+                }),
                 body);
           } else {
             throw std::runtime_error("incorrect prefix");
@@ -61,6 +62,7 @@ auto ProcConn(io::Socket connfd) -> Task<> {
   }
   co_return;
 }
+
 
 MainTask co_server(io::Socket sock) {
   while (true) {

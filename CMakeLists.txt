@@ -16,7 +16,6 @@ CPMAddPackage("gh:getml/reflect-cpp#v0.19.0")
 
 add_library(coros src/reactor.cpp
         src/socket.cpp
-        include/util/sys/throw_from_errno.hpp
         src/coro_utility.cpp)
 
 target_include_directories(coros PUBLIC include)
