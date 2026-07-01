@@ -3,10 +3,7 @@
 #include <variant>
 #include <exception>
 #include <coroutine>
-#include <print>
-#include <iostream>
-// #include <boost/stacktrace/stacktrace.hpp>
-#include "rfl/Result.hpp"
+#include <utility>
 
 #include <cassert>
 
@@ -30,7 +27,7 @@ struct RetBlock {
     result.template emplace<std::exception_ptr>(std::current_exception());
   }
 
-  Result Get() noexcept {
+  Result Get() {
     if (std::holds_alternative<Result>(result)) [[likely]] {
       return std::get<Result>(std::move(result));
     } else if (std::holds_alternative<std::exception_ptr>(result)) {

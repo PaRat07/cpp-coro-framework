@@ -1,14 +1,18 @@
 #pragma once
 
+#include "runtime/io/socket.hpp"
+#include "runtime/task.h"
+
 #include <fmt/chrono.h>
 #include <fmt/compile.h>
-#include "task.h"
 
-#include <chrono>
-#include <charconv>
 #include <algorithm>
+#include <charconv>
+#include <chrono>
+#include <util/sys/unwrap.h>
 
-#include <epoll_event_loop.h>
+#include <unistd.h>
+
 
 using namespace fmt::literals;
 enum class ReqType {
@@ -53,13 +57,13 @@ class HttpParser {
 private:
   static constexpr size_t kBufSz = 4096 * 8;
 public:
-  HttpParser(File &fd) : fd_(&fd) {
+  HttpParser(io::SocketView &fd) : fd_(fd) {
   }
 
   // returns if was unable to read all
   bool ReadData() {
     while (read_cnt_ < kBufSz) {
-      ssize_t extra_read = read(fd_->GetNativeHandle(), req_buf_.data() + read_cnt_, kBufSz - read_cnt_);
+      ssize_t extra_read = read(fd_._native_handle(), req_buf_.data() + read_cnt_, kBufSz - read_cnt_);
       if (extra_read == 0) [[unlikely]] {
         throw std::runtime_error("conn failed");
       } else if (extra_read == -1 && errno == EWOULDBLOCK) {
@@ -84,14 +88,14 @@ public:
         if (auto req = ParseRequest(headers_buf); req.has_value()) {
           std::span<char>::iterator cur_end = co_await func(rsp_buf_have, req.value());
           rsp_buf_have = { cur_end, rsp_buf_have.end() };
-          cur_rsp = { rsp_buf_.begin(), cur_end };
+          cur_rsp = std::span(rsp_buf_.begin().base(), cur_end.base());
         } else {
           break;
         }
       }
-      co_await fd_->Write(cur_rsp);
+      co_await fd_.Write(std::as_bytes(cur_rsp));
       if (!can_read_more) {
-        co_await fd_->Poll(true);
+        co_await fd_.Poll(io::SocketView::Access::kRead);
       }
     }
     co_return;
@@ -163,7 +167,7 @@ public:
   }
 
 private:
-  File *fd_;
+  io::SocketView fd_;
   size_t read_cnt_ = 0;
   size_t consumed_cnt_ = 0;
   std::vector<char> req_buf_ = std::vector<char>(kBufSz);
@@ -191,7 +195,7 @@ int DigCnt(int num) {
 }
 
 
-std::span<char>::iterator WriteResponse(std::span<char> output, File &fd, std::span<const std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
+std::span<char>::iterator WriteResponse(std::span<char> output, io::SocketView &fd, std::span<const std::pair<std::string_view, std::string_view>> headers, std::string_view body) {
   using namespace std::string_view_literals;
   namespace rng = std::ranges;
   namespace chr = std::chrono;

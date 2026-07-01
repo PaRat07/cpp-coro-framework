@@ -14,11 +14,13 @@ include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 CPMAddPackage("gh:fmtlib/fmt#11.2.0")
 CPMAddPackage("gh:getml/reflect-cpp#v0.19.0")
 
-add_library(coros src/noop.cpp)
+add_library(coros src/reactor.cpp
+        src/socket.cpp
+        include/util/sys/throw_from_errno.hpp
+        src/coro_utility.cpp)
 
 target_include_directories(coros PUBLIC include)
 
-target_link_libraries(coros PUBLIC reflectcpp fmt::fmt-header-only)
-target_link_options(coros PUBLIC -luring -lpq)
+target_link_libraries(coros PUBLIC reflectcpp fmt::fmt)
 
 add_subdirectory(examples)

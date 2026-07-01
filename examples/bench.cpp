@@ -1,209 +1,107 @@
-#include "epoll_event_loop.h"
-using namespace epoll;
-#include "apq.h"
 #include <chrono>
-#include <http.h>
+#include <http/http.h>
 
+#include "errno.h"
+#include "runtime/sync/coro_utility.h"
+#include "runtime/sync/main_task.h"
+#include "runtime/task.h"
+#include <iostream>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <rfl.hpp>
 #include <rfl/json.hpp>
 #include <sys/socket.h>
-#include <thread>
-#include "coro_utility.h"
-#include "errno.h"
-#include "main_task.h"
-#include "task.h"
-#include "timed_event_loop.h"
 #include <sys/wait.h>
-#include <iostream>
+#include <thread>
 using namespace std::chrono_literals;
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
-struct InvokeOnConstruct {
-    InvokeOnConstruct(auto&& f) { f(); }
-};
+// struct InvokeOnConstruct {
+//   InvokeOnConstruct(auto &&f) { f(); }
+// };
+//
+// #define CONCAT_IMPL(a, b) a##b
+// #define CONCAT(a, b) CONCAT_IMPL(a, b)
+// #define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
 
-#define CONCAT_IMPL(a, b) a##b
-#define CONCAT(a, b) CONCAT_IMPL(a, b)
-#define ONCE static InvokeOnConstruct CONCAT(unique_name, __LINE__) = [&]
-
-
-auto ProcConn(File connfd, Connection &conn, PreparedStmnt<int> &stmnt) -> Task<> {
-    HttpParser parser(connfd);
-    try {
-      co_await parser.EachConnectionLoop([&] (std::span<char> rsp_buf, HttpRequest req) -> Task<std::span<char>::iterator> {
+auto ProcConn(io::Socket connfd) -> Task<> {
+  HttpParser parser(connfd);
+  try {
+    co_await parser.EachConnectionLoop(
+        [&](std::span<char> rsp_buf,
+            HttpRequest req) -> Task<std::span<char>::iterator> {
           if (req.path == "/plaintext") {
-            co_return WriteResponse(rsp_buf, connfd,
-                                  std::array{
-                                    std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
-                                    std::pair{"Server"sv, "Example"sv},
-                                    std::pair{"Connection"sv, "keep-alive"sv}
-                                  },
-                                   "Hello, world!");
-          }
-          else if (req.path == "/json") {
-              struct JsonResp {
-                  std::string_view message;
-              };
-              std::string body = rfl::json::write(JsonResp{.message = "Hello, World!"});
-              co_return WriteResponse(rsp_buf, connfd,
-                                    std::array{
-                                      std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                      std::pair{"Server"sv, "Example"sv},
-                                      std::pair{"Connection"sv, "keep-alive"sv}
-                                    },
-                                     body);
-          }
-          else if (req.path == "/db") {
-            // std::cout << "got db req" << std::endl;
-              int random_id = rand() % 10'000 + 1;
-              struct DbResp {
-                  int id;
-                  int randomNumber;
-              };
-              DbResp resp;
-              {
-                auto [resp_id, resp_num] = co_await QueryOne<std::tuple<int, int>>(conn, stmnt, std::byteswap(random_id));
-                resp = { std::byteswap(resp_id), std::byteswap(resp_num) };
-              }
-              std::string body = rfl::json::write(resp);
-              co_return WriteResponse(rsp_buf, connfd,
-                                    std::array{
-                                      std::pair{"Content-Type"sv, "application/json; charset=UTF-8"sv},
-                                      std::pair{"Server"sv, "Example"sv},
-                                      std::pair{"Connection"sv, "keep-alive"sv}
-                                    },
-                                     body);
-          }
-
-          else {
+            co_return WriteResponse(
+                rsp_buf, connfd,
+                std::array{
+                    std::pair{"Content-Type"sv, "text/plain; charset=UTF-8"sv},
+                    std::pair{"Server"sv, "Example"sv},
+                    std::pair{"Connection"sv, "keep-alive"sv}},
+                "Hello, world!");
+          } else if (req.path == "/json") {
+            struct JsonResp {
+              std::string_view message;
+            };
+            std::string body =
+                rfl::json::write(JsonResp{.message = "Hello, World!"});
+            co_return WriteResponse(
+                rsp_buf, connfd,
+                std::array{std::pair{"Content-Type"sv,
+                                     "application/json; charset=UTF-8"sv},
+                           std::pair{"Server"sv, "Example"sv},
+                           std::pair{"Connection"sv, "keep-alive"sv}},
+                body);
+          } else {
             throw std::runtime_error("incorrect prefix");
           }
-      });
-    } catch (const std::exception &exc) {
-      std::cerr << "Request error: " << exc.what() << std::endl;
-    }
-    co_return;
-}
-
-MainTask co_server(int fd_val) {
-  File fd(fd_val);
-  auto conn = co_await Connection::Create("host=tfb-database dbname=hello_world user=benchmarkdbuser password=benchmarkdbpass sslmode=disable");
-  auto stmnt = co_await PreparedStmnt<int>::Create(conn, R"(SELECT * FROM "world" WHERE id = $1;)");
-  while (true) {
-    spawn(ProcConn(co_await fd.Accept(), conn, stmnt));
+        });
+  } catch (const std::exception &exc) {
+    std::cerr << "Request error: " << exc.what() << std::endl;
   }
   co_return;
 }
 
-
-void fork_workers() {
-    int worker_count = 0;
-    pid_t pid;
-    cpu_set_t online_cpus, cpu;
-
-    signal(SIGPIPE, SIG_IGN);
-
-    // Get set/count of all online CPUs
-    CPU_ZERO(&online_cpus);
-    sched_getaffinity(0, sizeof(online_cpus), &online_cpus);
-    int num_online_cpus = CPU_COUNT(&online_cpus);
-
-    // Create a mapping between the relative cpu id and absolute cpu id for cases where the cpu ids are not contiguous
-    // E.g if only cpus 0, 1, 8, and 9 are visible to the app because taskset was used or because some cpus are offline
-    // then the mapping is 0 -> 0, 1 -> 1, 2 -> 8, 3 -> 9
-    int rel_to_abs_cpu[num_online_cpus];
-    int rel_cpu_index = 0;
-
-    for (int abs_cpu_index = 0; abs_cpu_index < CPU_SETSIZE; abs_cpu_index++) {
-        if (CPU_ISSET(abs_cpu_index, &online_cpus)) {
-            rel_to_abs_cpu[rel_cpu_index] = abs_cpu_index;
-            rel_cpu_index++;
-
-            if (rel_cpu_index == num_online_cpus)
-                break;
-        }
-    }
-
-    for (int i = 0; i < num_online_cpus; i++) {
-        pid = Unwrap(fork());
-        if (pid > 0) {
-
-            worker_count++;
-            fprintf(stderr, "Worker running on CPU %d\n", i);
-            continue;
-        }
-        if (pid == 0) {
-            CPU_ZERO(&cpu);
-            CPU_SET(rel_to_abs_cpu[i], &cpu);
-            Unwrap(sched_setaffinity(0, sizeof cpu, &cpu));
-            return;
-        }
-    }
-
-    (void)fprintf(stderr, "libreactor running with %d worker processes\n", worker_count);
-
-    wait(NULL); // wait for children to exit
-    (void)fprintf(stderr, "A worker process has exited unexpectedly. Shutting down.\n");
-    exit(EXIT_FAILURE);
+MainTask co_server(io::Socket sock) {
+  while (true) {
+    spawn(ProcConn(co_await sock.Accept()));
+  }
+  co_return;
 }
 
 int main() {
-    signal(SIGPIPE, SIG_IGN);
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  signal(SIGPIPE, SIG_IGN);
 
-    int one = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
-        throw std::system_error(errno, std::system_category(), "setsockopt SO_REUSEADDR");
-    }
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
-        throw std::system_error(errno, std::system_category(), "setsockopt SO_REUSEPORT");
-    }
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
-    // struct sock_filter code[] = {{BPF_LD | BPF_W | BPF_ABS, 0, 0, (__u32)SKF_AD_OFF + SKF_AD_CPU}, {BPF_RET | BPF_A, 0, 0, 0}};
-    // struct sock_fprog prog = { .len = sizeof(code)/sizeof(code[0]), .filter = code };
-    // setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &prog, sizeof(prog));
+  io::Socket sock(io::Socket::Domain::kInet);
+  using io::operator""_addr;
+  sock.Bind("0.0.0.0:5832"_addr);
+  sock.Listen();
 
-
-    sockaddr_in addr;
-    addr.sin_family = AF_INET; // IPv4
-    addr.sin_addr.s_addr = INADDR_ANY; // 0.0.0.0
-    addr.sin_port = htons(8080); // Port 8888
-    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        throw std::system_error(errno, std::system_category(), "bind error");
-    }
-
-    if (listen(fd, std::numeric_limits<int>::max()) < 0) {
-        close(fd);
-        throw std::system_error(errno, std::system_category(), "listen error");
-    }
-
-    // fork_workers();
-     //fork();fork();fork();fork();
-
-    // while (true) {
-    //   int connfd;
-    //   [&connfd, fd] mutable -> MainTask {
-    //     connfd = co_await AcceptIPV4(fd);
-    //   } ().RunLoop<IOUringEventLoop>();
-    //
-    //   [connfd] -> MainTask {
-    //     co_await ProcConn(connfd);
-    //   } ().RunLoop<IOUringEventLoop>();
-    // }
-
-    co_server(fd).RunLoop<EpollEventLoop>();
+  co_server(std::move(sock)).RunLoop();
 }
 
+// wrk -H 'Host: tfb-server' -H 'Accept:
+// text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7'
+// -H 'Connection: keep-alive' --latency -d 15 -c 16384 --timeout 8 -t 16
+// http://localhost:8080/plaintext -s pipeline.lua -- 16 wrk -H 'Host:
+// tfb-server' -H 'Accept:
+// text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7'
+// -H 'Connection: keep-alive' --latency -d 15 -c 1024  --timeout 8 -t 1
+// http://localhost:8080/plaintext -s pipeline.lua -- 16 wrk -H 'Host:
+// tfb-server' -H 'Accept:
+// text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7'
+// -H 'Connection: keep-alive' --latency -d 15 -c 1  --timeout 8 -t 1
+// http://localhost:8080/plaintext -s pipeline.lua -- 16
 
-// wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 16384 --timeout 8 -t 16 http://localhost:8080/plaintext -s pipeline.lua -- 16
-// wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 1024  --timeout 8 -t 1  http://localhost:8080/plaintext -s pipeline.lua -- 16
-// wrk -H 'Host: tfb-server' -H 'Accept: text/plain,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 1  --timeout 8 -t 1  http://localhost:8080/plaintext -s pipeline.lua -- 16
-
-// wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 512 --timeout 8 -t 16 "http://localhost:8080/db"
-// wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 15 -c 32 --timeout 8 -t 1 "http://localhost:8080/db"
-// wrk -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7' -H 'Connection: keep-alive' --latency -d 1 -c 1 --timeout 8 -t 1 "http://localhost:8080/db"
-// curl -H 'Host: tfb-server' -H 'Accept: application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,PGRES_COMMAND_OK*/*;q=0.7' -H 'Connection: keep-alive' "http://localhost:8080/db"
+// wrk -H 'Host: tfb-server' -H 'Accept:
+// application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7'
+// -H 'Connection: keep-alive' --latency -d 15 -c 512 --timeout 8 -t 16
+// "http://localhost:8080/db" wrk -H 'Host: tfb-server' -H 'Accept:
+// application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7'
+// -H 'Connection: keep-alive' --latency -d 15 -c 32 --timeout 8 -t 1
+// "http://localhost:8080/db" wrk -H 'Host: tfb-server' -H 'Accept:
+// application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,*/*;q=0.7'
+// -H 'Connection: keep-alive' --latency -d 1 -c 1 --timeout 8 -t 1
+// "http://localhost:8080/db" curl -H 'Host: tfb-server' -H 'Accept:
+// application/json,text/html;q=0.9,application/xhtml+xml;q=0.9,application/xml;q=0.8,PGRES_COMMAND_OK*/*;q=0.7'
+// -H 'Connection: keep-alive' "http://localhost:8080/db"

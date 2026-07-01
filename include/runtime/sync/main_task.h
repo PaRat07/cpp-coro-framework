@@ -1,5 +1,7 @@
 #pragma once
 
+#include <runtime/io/reactor.hpp>
+
 #include <array>
 #include <exception>
 #include <coroutine>
@@ -48,13 +50,11 @@ public:
     MainTask(const MainTask& other) = delete;
 
 
-    template<typename... EvLoops>
     void RunLoop() {
-        (EvLoops::Init(), ...);
         signal(SIGTERM, +[] (int) { IsEnd = true; });
         handle_.resume();
         while (!handle_.done()) {
-            ((EvLoops::Resume()), ...);
+            io::Reactor::Get().Poll();
         }
     }
 

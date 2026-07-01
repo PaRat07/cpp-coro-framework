@@ -10,3 +10,7 @@ struct MoveOnly {
   MoveOnly& operator=(const MoveOnly&) = delete;
 };
 
+struct Immovable {
+  ~Immovable() = default;
+};
+

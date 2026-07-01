@@ -1,8 +1,9 @@
 #pragma once
 
-#include <vector>
 #include <algorithm>
+#include <cassert>
 #include <ranges>
+#include <vector>
 
 template<typename T>
 class Queue {

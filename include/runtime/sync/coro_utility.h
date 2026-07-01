@@ -1,11 +1,9 @@
 #pragma once
 
-#include <coroutine>
-#include <stack>
-#include <vector>
+#include "util/my-queue.h"
+#include "runtime/task.h"
 
-#include "task.h"
-#include "my-queue.h"
+#include <memory>
 
 struct NoSuspendTask;
 
@@ -16,7 +14,7 @@ public:
 };
 struct NoSuspendTask {
   std::coroutine_handle<NoSuspendTask> self;
-  // Called by the compiler to get the coroutine's return object:
+
   auto get_return_object() noexcept {
     return spawn_task{ std::coroutine_handle<NoSuspendTask>::from_promise(*this) };
   }
@@ -28,6 +26,22 @@ struct NoSuspendTask {
   void return_void() noexcept {}
   void unhandled_exception() noexcept { std::terminate(); }
 };
+
+void _log_spawn_exception(const std::exception* ep);
+
+template <typename Awaitable>
+void spawn(Awaitable awaitable) {
+  [] (Awaitable awaitable) static -> spawn_task {
+    try {
+      co_await awaitable;
+    } catch (const std::exception &exc) {
+      _log_spawn_exception(&exc);
+    } catch (...) {
+      _log_spawn_exception(nullptr);
+    }
+  } (std::move(awaitable));
+}
+
 // usage std::coroutine_handle<> my_handle = co_await Self();
 inline auto Self() {
     struct SelfAwaitable {
@@ -78,8 +92,6 @@ Task<> WhenAllImpl([[clang::coro_await_elidable_argument]] Ts&&... tasks) {
 }
 
 
-// waits for all the coros and returns tuple of their results
-// if task returns void it returns std::type_identity<void>
 template<typename... Ts>
 Task<std::tuple<DevoidifyedT<Ts>...>> WhenAll([[clang::coro_await_elidable_argument]] Task<Ts>&&... tasks) {
     std::tuple<DevoidifyedT<Ts>...> ans;
@@ -92,35 +104,7 @@ Task<std::tuple<DevoidifyedT<Ts>...>> WhenAll([[clang::coro_await_elidable_argum
 
 
 
-Task<> WhenAll([[clang::coro_await_elidable_argument]] std::span<Task<>> tasks) {
-    std::coroutine_handle<> self = co_await Self();
-    for (auto &i : tasks) {
-        i.GetHandle().promise().caller_handle = self;
-    }
-    for (auto &i : tasks) {
-        i.GetHandle().resume();
-    }
-    for (size_t i = 0; i < tasks.size(); ++i) {
-        co_await std::suspend_always{};
-    }
-    co_return;
-}
-
-
-
-
-template <typename Awaitable>
-auto spawn(Awaitable awaitable) -> void {
-    [] (Awaitable awaitable) static -> spawn_task {
-        try {
-          co_await awaitable;
-        } catch (const std::exception &exc) {
-          std::cerr << "Thrown out of spawned coro: " << exc.what() << std::endl;
-        } catch (...) {
-          std::cerr << "Thrown out of spawned coro: <unknow exception type>" << std::endl;
-        }
-    } (std::move(awaitable));
-}
+Task<> WhenAll(std::span<Task<>> tasks);
 
 struct WriteHandle {
   bool await_ready() const noexcept { return false; }
@@ -147,42 +131,53 @@ struct InvokeWithHandle {
   T func;
 };
 
-struct BinarySemaphore {
-  void Release() {
-    if (waiting.Empty()) {
-      ++overreleased;
-    } else {
-      waiting.Pop().resume();
-    }
+struct Mutex {
+public:
+  auto lock() -> Task<> {
+    struct LockAwaitable {
+      bool await_ready() const noexcept { return !locked; }
+
+      void await_suspend(std::coroutine_handle<> handle) noexcept {
+        tasks.Push(handle);
+      }
+
+      void await_resume() const noexcept {}
+
+      Queue<std::coroutine_handle<>>& tasks;
+      bool locked;
+    };
+    co_return co_await LockAwaitable {
+      .tasks = tasks_,
+      .locked = locked_
+    };
   }
-  Task<> Acquire() {
-    if (overreleased > 0) {
-      --overreleased;
-      co_return;
-    } else {
-      co_await InvokeWithHandle{ [this] (std::coroutine_handle<> handle){ waiting.Push(handle); }};
-      co_return;
+
+  auto unlock() {
+    locked_ = false;
+    if (!tasks_.Empty()) {
+      tasks_.Pop().resume();
     }
   }
 
-  size_t overreleased = 0;
-  Queue<std::coroutine_handle<>> waiting;
+private:
+  Queue<std::coroutine_handle<>> tasks_;
+  bool locked_ = false;
 };
 
 template<typename T>
-struct RsCoroMutex {
+struct RsMutex {
 private:
   Queue<std::coroutine_handle<>> tasks_;
   T val;
   bool owned = false;
 
 public:
-  RsCoroMutex(T obj) : val(std::move(obj)) {}
+  RsMutex(T obj) : val(std::move(obj)) {}
 
   struct CoroLockGuard {
   public:
-    using CoroLockGuardImpl = std::unique_ptr<RsCoroMutex, decltype([] (RsCoroMutex *leaser) {})>;
-    explicit CoroLockGuard(RsCoroMutex &leaser) {
+    using CoroLockGuardImpl = std::unique_ptr<RsMutex, decltype([] (RsMutex *leaser) {})>;
+    explicit CoroLockGuard(RsMutex &leaser) {
       leaser_ = CoroLockGuardImpl{ &leaser };
     }
 
@@ -207,7 +202,7 @@ public:
       }
     }
 
-    friend struct RsCoroMutex;
+    friend struct RsMutex;
   private:
     CoroLockGuardImpl leaser_;
   };
